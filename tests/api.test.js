@@ -328,3 +328,4 @@ test('30. handler: POST summary with valid items but no API key returns 500', as
 
   if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
 });
+

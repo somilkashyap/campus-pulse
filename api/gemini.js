@@ -42,34 +42,7 @@ function checkRateLimit(ip) {
   return true;
 }
 
-function resetRateLimit() {
-  rateLimitMap.clear();
-}
-
-/**
- * Validates extraction input text.
- */
-function validateExtractInput(text) {
-  if (!text || typeof text !== 'string' || text.trim().length === 0) {
-    return { valid: false, error: 'Notice text is required for extraction.' };
-  }
-  if (text.length > 3000) {
-    return { valid: false, error: 'Notice text exceeds maximum allowed limit of 3000 characters.' };
-  }
-  return { valid: true };
-}
-
-/**
- * Validates weekly summary items array.
- */
-function validateSummaryInput(items) {
-  if (!Array.isArray(items) || items.length === 0) {
-    return { valid: false, error: 'Please provide a non-empty list of notice items to summarize.' };
-  }
-  return { valid: true };
-}
-
-async function handler(req, res) {
+module.exports = async function handler(req, res) {
   // Only accept POST requests
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
@@ -77,13 +50,21 @@ async function handler(req, res) {
   }
 
   // Check rate limit by IP
-  const clientIp = (req.headers && req.headers['x-forwarded-for'])
-    ? req.headers['x-forwarded-for'].split(',')[0].trim()
-    : req.socket?.remoteAddress || 'unknown';
+  const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+                   req.socket?.remoteAddress ||
+                   'unknown';
 
   if (!checkRateLimit(clientIp)) {
     return res.status(429).json({
       error: 'Rate limit exceeded: Maximum 10 requests per minute. Please wait before trying again.'
+    });
+  }
+
+  // Validate API key from server environment (never exposed to frontend)
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({
+      error: 'GEMINI_API_KEY is not configured on the server. Please set it in your environment variables.'
     });
   }
 
@@ -99,27 +80,6 @@ async function handler(req, res) {
 
   const { type, text, items, today } = body || {};
 
-  // Validate input based on mode before checking API key
-  if (type === 'summary') {
-    const summaryValidation = validateSummaryInput(items);
-    if (!summaryValidation.valid) {
-      return res.status(400).json({ error: summaryValidation.error });
-    }
-  } else {
-    const extractValidation = validateExtractInput(text);
-    if (!extractValidation.valid) {
-      return res.status(400).json({ error: extractValidation.error });
-    }
-  }
-
-  // Validate API key from server environment (never exposed to frontend)
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({
-      error: 'GEMINI_API_KEY is not configured on the server. Please set it in your environment variables.'
-    });
-  }
-
   // Determine reference date (fallback to today if invalid)
   const referenceDate = (typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today))
     ? today
@@ -131,6 +91,10 @@ async function handler(req, res) {
   // MODE 1: WEEKLY SUMMARY ({ type: "summary", items, today })
   // ============================================================
   if (type === 'summary') {
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Please provide a non-empty list of notice items to summarize.' });
+    }
+
     // Limit payload size: maximum 50 items
     const limitedItems = items.slice(0, 50).map(item => ({
       title: (item.title || '').slice(0, 150),
@@ -223,6 +187,14 @@ Format requirements:
   // ============================================================
   // MODE 2: NOTICE EXTRACTION (POST { text, today })
   // ============================================================
+  if (!text || typeof text !== 'string' || text.trim().length === 0) {
+    return res.status(400).json({ error: 'Notice text is required for extraction.' });
+  }
+
+  if (text.length > 3000) {
+    return res.status(400).json({ error: 'Notice text exceeds maximum allowed limit of 3000 characters.' });
+  }
+
   const extractionSystemPrompt = `You are a specialized campus notice parser.
 Today's reference date is: ${referenceDate}
 
@@ -315,19 +287,6 @@ PARSING REQUIREMENTS:
       error: 'An internal error occurred while processing the notice with Gemini.'
     });
   }
-}
+};
 
-// Attach helpers to handler function for testing/reusability
-handler.checkRateLimit = checkRateLimit;
-handler.resetRateLimit = resetRateLimit;
-handler.validateExtractInput = validateExtractInput;
-handler.validateSummaryInput = validateSummaryInput;
-handler.rateLimitMap = rateLimitMap;
-
-module.exports = handler;
-module.exports.default = handler;
-module.exports.checkRateLimit = checkRateLimit;
-module.exports.resetRateLimit = resetRateLimit;
-module.exports.validateExtractInput = validateExtractInput;
-module.exports.validateSummaryInput = validateSummaryInput;
-module.exports.rateLimitMap = rateLimitMap;
+module.exports.default = module.exports;

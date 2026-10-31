@@ -13,22 +13,6 @@ const STORAGE_KEYS = {
   SUMMARY_CACHE: 'campus_pulse_summary_cache_v1'
 };
 
-// Import pure utility functions from window.CampusUtils (or require in Node)
-const {
-  getStatus,
-  sortByUrgency,
-  filterNotices,
-  validateNotice,
-  parseGeminiJson,
-  isThisWeek,
-  getTodayISO,
-  getOffsetDateISO,
-  formatReadableDate,
-  cleanAndCapNotices
-} = (typeof window !== 'undefined' && window.CampusUtils) 
-  ? window.CampusUtils 
-  : (typeof require !== 'undefined' ? require('./utils.js') : {});
-
 // Available categories with their associated emoji and style classes
 const CATEGORIES = [
   { name: 'All', emoji: '🌐' },
@@ -147,11 +131,37 @@ function getTodayISO() {
 }
 
 /**
- * Computes priority status from today's date for every notice.
- * Delegates directly to CampusUtils.getStatus.
+ * Computes priority status from today's date for every notice:
+ * - 'Expired': date < today
+ * - 'Today': date === today
+ * - 'Urgent': date > today && date <= 48 hours from today (tomorrow or day after)
+ * - 'Upcoming': date > 48 hours from today
  */
 function computeNoticeStatus(noticeDateISO) {
-  return getStatus(noticeDateISO, getTodayISO());
+  if (!noticeDateISO || !/^\d{4}-\d{2}-\d{2}$/.test(noticeDateISO)) {
+    return 'Upcoming';
+  }
+
+  const todayISO = getTodayISO();
+  if (noticeDateISO === todayISO) {
+    return 'Today';
+  }
+  if (noticeDateISO < todayISO) {
+    return 'Expired';
+  }
+
+  const [tY, tM, tD] = todayISO.split('-').map(Number);
+  const [nY, nM, nD] = noticeDateISO.split('-').map(Number);
+  const todayDate = new Date(tY, tM - 1, tD);
+  const noticeDate = new Date(nY, nM - 1, nD);
+
+  const diffMs = noticeDate.getTime() - todayDate.getTime();
+  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays <= 2) {
+    return 'Urgent'; // Within 48 hours
+  }
+  return 'Upcoming';
 }
 
 /**
@@ -723,7 +733,21 @@ function renderCategoryChips() {
 // ==========================================
 
 function getFilteredNotices() {
-  return filterNotices(state.notices, state.searchQuery, state.activeCategory);
+  const query = state.searchQuery.trim().toLowerCase();
+  const categoryFilter = state.activeCategory.toLowerCase();
+
+  return state.notices.filter(notice => {
+    const matchesCategory = categoryFilter === 'all' || (notice.category || '').toLowerCase() === categoryFilter;
+    if (!matchesCategory) return false;
+
+    if (!query) return true;
+
+    const titleMatch = (notice.title || '').toLowerCase().includes(query);
+    const venueMatch = (notice.venue || '').toLowerCase().includes(query);
+    const descMatch = (notice.description || '').toLowerCase().includes(query);
+
+    return titleMatch || venueMatch || descMatch;
+  });
 }
 
 // ==========================================
@@ -818,14 +842,25 @@ function renderNoticesList() {
     }
   });
 
-  // Urgency sorting via CampusUtils.sortByUrgency
-  const sortedActive = sortByUrgency(activeNotices, todayISO);
+  // Urgency comparator: Today (1) -> Urgent within 48h (2) -> Upcoming (3)
+  const statusRank = {
+    'Today': 1,
+    'Urgent': 2,
+    'Upcoming': 3
+  };
+
+  activeNotices.sort((a, b) => {
+    const rankA = statusRank[computeNoticeStatus(a.date)] || 4;
+    const rankB = statusRank[computeNoticeStatus(b.date)] || 4;
+    if (rankA !== rankB) return rankA - rankB;
+    return (a.date || '').localeCompare(b.date || '');
+  });
 
   // Sort expired notices reverse-chronologically (most recently expired first)
   expiredNotices.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
   // Update total count indicator (active items)
-  elements.totalNoticesCount.textContent = sortedActive.length;
+  elements.totalNoticesCount.textContent = activeNotices.length;
 
   // Filter badge indicator
   const query = state.searchQuery.trim();
@@ -833,7 +868,7 @@ function renderNoticesList() {
   const isFiltered = query.length > 0 || categoryFilter !== 'all';
   if (isFiltered) {
     elements.activeFilterBadge.classList.remove('hidden');
-    elements.activeFilterBadge.textContent = `Filtered (${sortedActive.length + expiredNotices.length})`;
+    elements.activeFilterBadge.textContent = `Filtered (${activeNotices.length + expiredNotices.length})`;
   } else {
     elements.activeFilterBadge.classList.add('hidden');
   }
@@ -841,8 +876,8 @@ function renderNoticesList() {
   // Clear main container safely
   elements.noticeCardsContainer.textContent = '';
 
-  if (sortedActive.length > 0) {
-    sortedActive.forEach(notice => {
+  if (activeNotices.length > 0) {
+    activeNotices.forEach(notice => {
       const card = createNoticeCardElement(notice, notice.date === getTodayISO());
       elements.noticeCardsContainer.appendChild(card);
     });
@@ -1158,12 +1193,11 @@ async function handleGenerateWeeklySummary() {
     console.warn('Error reading summary cache:', e);
   }
 
-  // Get active upcoming notices for this week using isThisWeek
-  const todayISO = getTodayISO();
-  const weekNotices = state.notices.filter(n => isThisWeek(n.date, todayISO));
+  // Get active upcoming notices (Today, Urgent, Upcoming)
+  const activeUpcomingNotices = state.notices.filter(n => computeNoticeStatus(n.date) !== 'Expired');
 
-  if (weekNotices.length === 0) {
-    showToast('ℹ️ No notices found for this week to summarize.');
+  if (activeUpcomingNotices.length === 0) {
+    showToast('ℹ️ No active notices found to summarize for this week.');
     return;
   }
 
@@ -1181,8 +1215,8 @@ async function handleGenerateWeeklySummary() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         type: 'summary',
-        items: weekNotices,
-        today: todayISO
+        items: activeUpcomingNotices,
+        today: getTodayISO()
       })
     });
 
@@ -1633,21 +1667,9 @@ function renderEditablePreviewCard(extracted, originalText) {
     const finalCategory = catSelect.value || 'Other';
     const finalDesc = descTextarea.value.trim() || 'Not specified';
 
-    // Validate using pure helper validateNotice
-    const validation = validateNotice({
-      title: finalTitle,
-      date: finalDate,
-      time: finalTime,
-      venue: finalVenue,
-      category: finalCategory,
-      description: finalDesc
-    });
-
-    if (!validation.valid) {
-      showToast('⚠️ ' + validation.errors[0]);
-      if (validation.errors[0].toLowerCase().includes('title')) {
-        titleInput.focus();
-      }
+    if (!finalTitle || finalTitle.toLowerCase() === 'not specified') {
+      showToast('⚠️ Please enter a title for the notice.');
+      titleInput.focus();
       return;
     }
 
