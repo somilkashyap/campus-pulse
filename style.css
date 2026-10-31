@@ -92,14 +92,16 @@ html {
 /* Accessible focus outlines */
 button:focus-visible,
 input:focus-visible,
-textarea:focus-visible {
+textarea:focus-visible,
+summary:focus-visible {
   outline: 2px solid #1a73e8;
   outline-offset: 2px;
 }
 
 .dark button:focus-visible,
 .dark input:focus-visible,
-.dark textarea:focus-visible {
+.dark textarea:focus-visible,
+.dark summary:focus-visible {
   outline: 2px solid #60a5fa;
   outline-offset: 2px;
 }
@@ -119,4 +121,14 @@ textarea:focus-visible {
   animation: spinClockwise 0.8s linear infinite;
 }
 
+/* Calendar day cell touch target */
+.calendar-day-btn {
+  min-height: 48px;
+  transition: all 0.15s ease-in-out;
+}
 
+@media (max-width: 640px) {
+  .calendar-day-btn {
+    min-height: 42px;
+  }
+}
