@@ -3,3 +3,7 @@ node_modules/
 .env.local
 .vercel
 
+# Local Node.js wrappers (only needed on machines with no system Node)
+node.cmd
+npm.cmd
+

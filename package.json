@@ -1,0 +1,8 @@
+{
+  "name": "campus-pulse",
+  "version": "1.0.0",
+  "description": "Campus Pulse - Student Notice & Deadline Tracker",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}

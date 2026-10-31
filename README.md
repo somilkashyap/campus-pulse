@@ -1,3 +1,5 @@
+![Tests](https://github.com/somilkashyap/campus-pulse/actions/workflows/test.yml/badge.svg)
+
 # Campus Pulse ðŸŽ“
 > **Never miss a notice again** &mdash; One central, responsive web app for students to track deadlines, notices, and campus events.
 
@@ -104,4 +106,32 @@ If you only want to test the frontend offline with preloaded realistic samples, 
 - **Rate Limiting**: Serverless endpoint enforces a limit of 10 requests/minute per IP.
 - **Zero Secret Exposure**: `GEMINI_API_KEY` is strictly accessed within the serverless environment (`process.env.GEMINI_API_KEY`) and is never delivered to the client.
 - **Strict DOM Manipulation**: All user and AI texts are rendered exclusively using `textContent` and safe DOM elements, never `innerHTML`.
+
+
+---
+
+## ?? Testing
+
+Campus Pulse ships with **68 automated tests** (zero external dependencies) using Node.js built-in 
+ode:test and 
+ode:assert.
+
+### What's covered
+
+| File | Tests | Coverage |
+|---|---|---|
+| 	ests/utils.test.js | 38 | getStatus, sortByUrgency, ilterNotices, alidateNotice, parseGeminiJson, isThisWeek, cleanAndCapNotices — including edge cases, boundary conditions, invalid input |
+| 	ests/api.test.js | 30 | alidateExtractInput, alidateSummaryInput, checkRateLimit, esetRateLimit, full handler (405/400/429/500) |
+
+### How to run
+
+`ash
+# Using npm (requires Node.js 18+ on PATH)
+npm test
+
+# Or directly with node
+node --test tests/utils.test.js tests/api.test.js
+`
+
+Tests also run automatically on every push via **GitHub Actions** (.github/workflows/test.yml, Node 20).
 
