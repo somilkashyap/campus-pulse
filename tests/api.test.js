@@ -1,191 +1,25 @@
 /**
- * Automated tests for api/gemini.js input validation and rate limiting.
+ * Automated tests for api/gemini.js handler behaviour.
+ * Tests are written against the handler's observable HTTP responses only —
+ * no dependency on any named exports (the current gemini.js does not export helpers).
+ *
  * Uses Node.js built-in test runner (node:test, node:assert).
- * Zero external dependencies. fetch is mocked globally where needed.
+ * Zero external dependencies.
  */
 
 const test = require('node:test');
 const assert = require('node:assert');
 
+// Load the handler (default export)
+const handler = require('../api/gemini.js');
+
 // ---------------------------------------------------------------------------
-// Load the exported helpers from api/gemini.js
-// The Vercel handler is the default export; helpers are named exports.
+// Helpers
 // ---------------------------------------------------------------------------
-const {
-  checkRateLimit,
-  resetRateLimit,
-  validateExtractInput,
-  validateSummaryInput,
-  rateLimitMap,
-} = require('../api/gemini.js');
-
-// ============================================================
-// validateExtractInput — input validation for extraction mode
-// ============================================================
-
-test('1. validateExtractInput: empty string is invalid', () => {
-  const result = validateExtractInput('');
-  assert.strictEqual(result.valid, false);
-  assert.ok(result.error, 'Should provide an error message');
-});
-
-test('2. validateExtractInput: null is invalid', () => {
-  const result = validateExtractInput(null);
-  assert.strictEqual(result.valid, false);
-});
-
-test('3. validateExtractInput: undefined is invalid', () => {
-  const result = validateExtractInput(undefined);
-  assert.strictEqual(result.valid, false);
-});
-
-test('4. validateExtractInput: whitespace-only string is invalid', () => {
-  const result = validateExtractInput('   \n\t  ');
-  assert.strictEqual(result.valid, false);
-});
-
-test('5. validateExtractInput: text over 3000 chars is invalid', () => {
-  const longText = 'a'.repeat(3001);
-  const result = validateExtractInput(longText);
-  assert.strictEqual(result.valid, false);
-  assert.ok(result.error && result.error.includes('3000'), 'Error should mention 3000');
-});
-
-test('6. validateExtractInput: text of exactly 3001 chars is invalid', () => {
-  const longText = 'b'.repeat(3001);
-  const result = validateExtractInput(longText);
-  assert.strictEqual(result.valid, false);
-});
-
-test('7. validateExtractInput: text of exactly 3000 chars is valid', () => {
-  const exactText = 'c'.repeat(3000);
-  const result = validateExtractInput(exactText);
-  assert.strictEqual(result.valid, true);
-});
-
-test('8. validateExtractInput: normal notice text is valid', () => {
-  const result = validateExtractInput('Exam on Monday at 10am in Room 201');
-  assert.strictEqual(result.valid, true);
-});
-
-test('9. validateExtractInput: non-string value (number) is invalid', () => {
-  const result = validateExtractInput(42);
-  assert.strictEqual(result.valid, false);
-});
-
-test('10. validateExtractInput: Hinglish text is valid', () => {
-  const result = validateExtractInput('Kal 3 baje seminar hai LT-1 mein, compulsory attendance.');
-  assert.strictEqual(result.valid, true);
-});
-
-// ============================================================
-// validateSummaryInput — input validation for summary mode
-// ============================================================
-
-test('11. validateSummaryInput: empty array is invalid', () => {
-  const result = validateSummaryInput([]);
-  assert.strictEqual(result.valid, false);
-  assert.ok(result.error, 'Should provide an error message');
-});
-
-test('12. validateSummaryInput: null is invalid', () => {
-  const result = validateSummaryInput(null);
-  assert.strictEqual(result.valid, false);
-});
-
-test('13. validateSummaryInput: undefined is invalid', () => {
-  const result = validateSummaryInput(undefined);
-  assert.strictEqual(result.valid, false);
-});
-
-test('14. validateSummaryInput: a plain object (not array) is invalid', () => {
-  const result = validateSummaryInput({ title: 'Test' });
-  assert.strictEqual(result.valid, false);
-});
-
-test('15. validateSummaryInput: a string is invalid', () => {
-  const result = validateSummaryInput('just a string');
-  assert.strictEqual(result.valid, false);
-});
-
-test('16. validateSummaryInput: valid array with one item is valid', () => {
-  const result = validateSummaryInput([{ title: 'Exam', date: '2026-11-01' }]);
-  assert.strictEqual(result.valid, true);
-});
-
-test('17. validateSummaryInput: valid array with multiple items is valid', () => {
-  const items = [
-    { title: 'Exam', date: '2026-11-01' },
-    { title: 'Seminar', date: '2026-11-03' },
-    { title: 'Deadline', date: '2026-11-05' },
-  ];
-  const result = validateSummaryInput(items);
-  assert.strictEqual(result.valid, true);
-});
-
-// ============================================================
-// checkRateLimit & resetRateLimit — sliding window rate limiter
-// ============================================================
-
-test('18. checkRateLimit: first 10 calls from same IP all pass', () => {
-  resetRateLimit(); // clear state before test
-  const ip = 'test-ip-rate-18';
-  for (let i = 0; i < 10; i++) {
-    assert.strictEqual(checkRateLimit(ip), true, `Call ${i + 1} should pass`);
-  }
-});
-
-test('19. checkRateLimit: 11th call from same IP within window is blocked', () => {
-  resetRateLimit();
-  const ip = 'test-ip-rate-19';
-  for (let i = 0; i < 10; i++) {
-    checkRateLimit(ip);
-  }
-  assert.strictEqual(checkRateLimit(ip), false, '11th call should be blocked');
-});
-
-test('20. checkRateLimit: different IP is unaffected by another IP being rate-limited', () => {
-  resetRateLimit();
-  const ipA = 'test-ip-A';
-  const ipB = 'test-ip-B';
-
-  // Exhaust ipA
-  for (let i = 0; i < 10; i++) {
-    checkRateLimit(ipA);
-  }
-  // ipA should be blocked
-  assert.strictEqual(checkRateLimit(ipA), false, 'ipA should be blocked');
-  // ipB should still pass
-  assert.strictEqual(checkRateLimit(ipB), true, 'ipB should be unaffected');
-});
-
-test('21. checkRateLimit: resetRateLimit clears all state so requests pass again', () => {
-  const ip = 'test-ip-reset-21';
-  // Exhaust this IP
-  for (let i = 0; i < 10; i++) {
-    checkRateLimit(ip);
-  }
-  assert.strictEqual(checkRateLimit(ip), false, 'Should be blocked before reset');
-
-  resetRateLimit();
-  assert.strictEqual(checkRateLimit(ip), true, 'Should pass again after reset');
-});
-
-test('22. checkRateLimit: each call increments count (9th passes, 10th passes, 11th fails)', () => {
-  resetRateLimit();
-  const ip = 'test-ip-count-22';
-  for (let i = 0; i < 9; i++) checkRateLimit(ip);
-  assert.strictEqual(checkRateLimit(ip), true, '10th call should still pass');
-  assert.strictEqual(checkRateLimit(ip), false, '11th call should be blocked');
-});
-
-// ============================================================
-// Full handler tests — with mocked req/res and fetch
-// ============================================================
 
 /**
  * Creates a minimal mock response object compatible with the handler.
- * Captures statusCode and body for assertions.
+ * Captures _status and _body for assertions.
  */
 function makeMockRes() {
   const res = {
@@ -194,7 +28,7 @@ function makeMockRes() {
     _headers: {},
     status(code) {
       this._status = code;
-      return this; // for chaining: res.status(405).json(...)
+      return this; // allow .status(405).json(...)
     },
     json(body) {
       this._body = body;
@@ -207,125 +41,660 @@ function makeMockRes() {
   return res;
 }
 
-// Load the full handler (default export)
-const handler = require('../api/gemini.js');
+/**
+ * Makes a minimal POST request object.
+ * Uses a unique IP suffix to avoid sharing rate-limit buckets across tests.
+ */
+let ipCounter = 0;
+function makePostReq(body, ipSuffix) {
+  const ip = `10.test.${ipSuffix !== undefined ? ipSuffix : ++ipCounter}.1`;
+  return {
+    method: 'POST',
+    headers: { 'x-forwarded-for': ip },
+    body,
+  };
+}
 
-test('23. handler: GET request returns 405 Method Not Allowed', async () => {
-  resetRateLimit();
+// ---------------------------------------------------------------------------
+// METHOD VALIDATION
+// ---------------------------------------------------------------------------
+
+test('1. handler: GET request returns 405 Method Not Allowed', async () => {
   const req = { method: 'GET', headers: {}, body: {} };
   const res = makeMockRes();
   await handler(req, res);
   assert.strictEqual(res._status, 405);
-  assert.ok(res._body && res._body.error, 'Should have an error message');
+  assert.ok(res._body && typeof res._body.error === 'string', 'Should have an error string');
 });
 
-test('24. handler: POST with no text returns 400 Bad Request', async () => {
-  resetRateLimit();
-  const req = { method: 'POST', headers: { 'x-forwarded-for': '1.2.3.4' }, body: {} };
+test('2. handler: PUT request returns 405 Method Not Allowed', async () => {
+  const req = { method: 'PUT', headers: {}, body: {} };
   const res = makeMockRes();
   await handler(req, res);
-  assert.strictEqual(res._status, 400);
+  assert.strictEqual(res._status, 405);
 });
 
-test('25. handler: POST with text over 3000 chars returns 400', async () => {
-  resetRateLimit();
-  const req = {
-    method: 'POST',
-    headers: { 'x-forwarded-for': '1.2.3.5' },
-    body: { text: 'x'.repeat(3001), today: '2026-10-31' },
-  };
+// ---------------------------------------------------------------------------
+// EXTRACTION INPUT VALIDATION  (POST { text, today })
+// ---------------------------------------------------------------------------
+
+test('3. handler: POST with no body returns 400 or 500 (not 200)', async () => {
+  const req = makePostReq({});
   const res = makeMockRes();
   await handler(req, res);
-  assert.strictEqual(res._status, 400);
+  // Must reject — could be 400 (validation) or 500 (no API key checked first)
+  assert.ok(res._status === 400 || res._status === 500,
+    `Expected 400 or 500, got ${res._status}`);
 });
 
-test('26. handler: POST is rate-limited after 10 requests and returns 429', async () => {
-  resetRateLimit();
-  const ip = '10.0.0.1';
-
-  // Exhaust rate limit without hitting the actual Gemini API:
-  // Provide text so input validation passes, but let the handler reach the
-  // API key check (it will 500 since GEMINI_API_KEY isn't set in test env).
-  // We only need 10 iterations to consume the budget.
-  const reqTemplate = {
-    method: 'POST',
-    headers: { 'x-forwarded-for': ip },
-    body: { text: 'Valid notice text for rate limit test.', today: '2026-10-31' },
-  };
-
-  for (let i = 0; i < 10; i++) {
-    const res = makeMockRes();
-    await handler(reqTemplate, res);
-    // These will 500 (no API key) but that's fine — rate limit is counted
-  }
-
-  // 11th request should be rate-limited
-  const finalRes = makeMockRes();
-  await handler(reqTemplate, finalRes);
-  assert.strictEqual(finalRes._status, 429);
-  assert.ok(finalRes._body && finalRes._body.error, 'Should return a rate limit error message');
-});
-
-test('27. handler: POST without GEMINI_API_KEY set returns 500', async () => {
-  resetRateLimit();
+test('4. handler: POST with empty text string returns 400', async () => {
   const savedKey = process.env.GEMINI_API_KEY;
   delete process.env.GEMINI_API_KEY;
 
-  const req = {
-    method: 'POST',
-    headers: { 'x-forwarded-for': '2.3.4.5' },
-    body: { text: 'Exam tomorrow in LT-3 at 9am', today: '2026-10-31' },
-  };
+  // We need to reach text validation, but the key check happens before validation
+  // in the current code. Set a fake key so we reach validation.
+  process.env.GEMINI_API_KEY = 'fake-key-for-validation-test';
+
+  const req = makePostReq({ text: '', today: '2026-11-01' });
   const res = makeMockRes();
   await handler(req, res);
-  assert.strictEqual(res._status, 500);
 
   // Restore
   if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 400);
+  assert.ok(res._body && typeof res._body.error === 'string');
 });
 
-test('28. handler: POST summary mode with empty items returns 400', async () => {
-  resetRateLimit();
-  const req = {
-    method: 'POST',
-    headers: { 'x-forwarded-for': '3.4.5.6' },
-    body: { type: 'summary', items: [], today: '2026-10-31' },
-  };
+test('5. handler: POST with whitespace-only text returns 400', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key-for-validation-test';
+
+  const req = makePostReq({ text: '   \n\t  ', today: '2026-11-01' });
   const res = makeMockRes();
   await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
   assert.strictEqual(res._status, 400);
 });
 
-test('29. handler: POST summary mode with non-array items returns 400', async () => {
-  resetRateLimit();
-  const req = {
-    method: 'POST',
-    headers: { 'x-forwarded-for': '3.4.5.7' },
-    body: { type: 'summary', items: 'not-an-array', today: '2026-10-31' },
-  };
+test('6. handler: POST with text of exactly 3001 chars returns 400', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key-for-validation-test';
+
+  const req = makePostReq({ text: 'x'.repeat(3001), today: '2026-11-01' });
   const res = makeMockRes();
   await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
   assert.strictEqual(res._status, 400);
+  assert.ok(res._body && res._body.error && res._body.error.includes('3000'),
+    'Error should mention the 3000-char limit');
 });
 
-test('30. handler: POST summary with valid items but no API key returns 500', async () => {
-  resetRateLimit();
+test('7. handler: POST with text of exactly 3000 chars passes validation (reaches API key check)', async () => {
+  // With no real API key the handler returns 500, not 400.
+  // A 500 here proves that text validation passed (400 would mean it failed).
   const savedKey = process.env.GEMINI_API_KEY;
   delete process.env.GEMINI_API_KEY;
 
-  const req = {
-    method: 'POST',
-    headers: { 'x-forwarded-for': '4.5.6.7' },
-    body: {
-      type: 'summary',
-      items: [{ title: 'Exam', date: '2026-11-01', category: 'Academic' }],
-      today: '2026-10-31',
-    },
-  };
+  const req = makePostReq({ text: 'c'.repeat(3000), today: '2026-11-01' });
   const res = makeMockRes();
   await handler(req, res);
-  assert.strictEqual(res._status, 500);
 
   if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+
+  assert.notStrictEqual(res._status, 400,
+    '3000-char text should pass input validation and not return 400');
 });
 
+test('8. handler: POST with valid short text but no API key returns 500', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+
+  const req = makePostReq({ text: 'Exam on Friday in LT-2 at 10am', today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+
+  assert.strictEqual(res._status, 500);
+  assert.ok(res._body && typeof res._body.error === 'string');
+});
+
+// ---------------------------------------------------------------------------
+// SUMMARY INPUT VALIDATION  (POST { type: "summary", items, today })
+// ---------------------------------------------------------------------------
+
+test('9. handler: POST summary with empty items array returns 400', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key-for-validation-test';
+
+  const req = makePostReq({ type: 'summary', items: [], today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 400);
+  assert.ok(res._body && typeof res._body.error === 'string');
+});
+
+test('10. handler: POST summary with non-array items returns 400', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key-for-validation-test';
+
+  const req = makePostReq({ type: 'summary', items: 'not-an-array', today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 400);
+});
+
+test('11. handler: POST summary with null items returns 400', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key-for-validation-test';
+
+  const req = makePostReq({ type: 'summary', items: null, today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 400);
+});
+
+test('12. handler: POST summary with valid items but no API key returns 500', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+
+  const req = makePostReq({
+    type: 'summary',
+    items: [{ title: 'Exam', date: '2026-11-03', category: 'Academic' }],
+    today: '2026-11-01',
+  });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+
+  assert.strictEqual(res._status, 500);
+});
+
+// ---------------------------------------------------------------------------
+// RATE LIMITING
+// Each test uses its own unique IP (via ipCounter) so tests never share buckets.
+// ---------------------------------------------------------------------------
+
+test('13. handler: first 10 requests from the same IP all pass rate limit', async () => {
+  // Use a single unique IP for this test only
+  const ip = `10.rl.uniq.${Date.now()}`;
+  const savedKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY; // so handler returns 500 quickly, not calling Gemini
+
+  const statuses = [];
+  for (let i = 0; i < 10; i++) {
+    const req = {
+      method: 'POST',
+      headers: { 'x-forwarded-for': ip },
+      body: { text: 'Valid notice text for rate limit test.', today: '2026-11-01' },
+    };
+    const res = makeMockRes();
+    await handler(req, res);
+    statuses.push(res._status);
+  }
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+
+  // All 10 should reach the API-key check (500), not be rate-limited (429)
+  for (let i = 0; i < 10; i++) {
+    assert.notStrictEqual(statuses[i], 429, `Call ${i + 1} should not be rate-limited`);
+  }
+});
+
+test('14. handler: 11th request from the same IP returns 429 Too Many Requests', async () => {
+  const ip = `10.rl.11th.${Date.now()}`;
+  const savedKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+
+  // Exhaust the 10-request budget
+  for (let i = 0; i < 10; i++) {
+    const req = {
+      method: 'POST',
+      headers: { 'x-forwarded-for': ip },
+      body: { text: 'Rate limit exhaust', today: '2026-11-01' },
+    };
+    await handler(req, makeMockRes());
+  }
+
+  // 11th request
+  const req11 = {
+    method: 'POST',
+    headers: { 'x-forwarded-for': ip },
+    body: { text: 'Should be rate limited', today: '2026-11-01' },
+  };
+  const res11 = makeMockRes();
+  await handler(req11, res11);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+
+  assert.strictEqual(res11._status, 429);
+  assert.ok(res11._body && typeof res11._body.error === 'string',
+    'Should return a descriptive rate-limit error message');
+});
+
+test('15. handler: a different IP is not blocked when another IP hits the rate limit', async () => {
+  const ipA = `10.rl.ipA.${Date.now()}`;
+  const ipB = `10.rl.ipB.${Date.now()}`;
+  const savedKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+
+  // Exhaust ipA
+  for (let i = 0; i < 10; i++) {
+    const req = {
+      method: 'POST',
+      headers: { 'x-forwarded-for': ipA },
+      body: { text: 'Exhaust ipA', today: '2026-11-01' },
+    };
+    await handler(req, makeMockRes());
+  }
+
+  // Confirm ipA is now blocked
+  const resA = makeMockRes();
+  await handler({
+    method: 'POST',
+    headers: { 'x-forwarded-for': ipA },
+    body: { text: 'ipA 11th', today: '2026-11-01' },
+  }, resA);
+
+  // ipB should still pass (returns 500 for no API key, not 429)
+  const resB = makeMockRes();
+  await handler({
+    method: 'POST',
+    headers: { 'x-forwarded-for': ipB },
+    body: { text: 'ipB first request', today: '2026-11-01' },
+  }, resB);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+
+  assert.strictEqual(resA._status, 429, 'ipA should be rate-limited');
+  assert.notStrictEqual(resB._status, 429, 'ipB should not be rate-limited');
+});
+
+// ---------------------------------------------------------------------------
+// BODY PARSING EDGE CASES
+// ---------------------------------------------------------------------------
+
+test('16. handler: POST with string body (JSON string) is parsed correctly', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key';
+
+  // Some Vercel setups pass body as a raw JSON string
+  const req = makePostReq(JSON.stringify({ text: '', today: '2026-11-01' }));
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  // Empty text should yield 400 after parsing the string body
+  assert.strictEqual(res._status, 400);
+});
+
+test('17. handler: POST with malformed JSON string body returns 400', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key';
+
+  const req = makePostReq('this is { not : valid json');
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 400);
+});
+
+// ---------------------------------------------------------------------------
+// SUCCESSFUL PATH (mocked fetch)
+// ---------------------------------------------------------------------------
+
+test('18. handler: POST with valid text and mocked Gemini returns 200 with notices array', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-api-key';
+
+  // Mock global fetch
+  const originalFetch = global.fetch;
+  const fakeNotice = {
+    title: 'Semester Exam',
+    date: '2026-11-05',
+    time: '10:00 AM',
+    venue: 'LT-3',
+    category: 'Academic',
+    description: 'End semester examination.',
+  };
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      candidates: [{
+        content: {
+          parts: [{ text: JSON.stringify([fakeNotice]) }],
+        },
+      }],
+    }),
+  });
+
+  const req = makePostReq({ text: 'Exam on 5th Nov at LT-3', today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  // Restore
+  global.fetch = originalFetch;
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 200);
+  assert.ok(Array.isArray(res._body.notices), 'Response should have a notices array');
+  assert.strictEqual(res._body.notices.length, 1);
+  assert.strictEqual(res._body.notices[0].title, 'Semester Exam');
+});
+
+test('19. handler: POST summary with valid items and mocked Gemini returns 200 with summary', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-api-key';
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      candidates: [{
+        content: {
+          parts: [{ text: JSON.stringify({ summary: '📅 This week: Exam on Wed, Seminar on Thu.' }) }],
+        },
+      }],
+    }),
+  });
+
+  const req = makePostReq({
+    type: 'summary',
+    items: [
+      { title: 'Exam', date: '2026-11-05', category: 'Academic', description: 'Mid-sem exam.' },
+    ],
+    today: '2026-11-01',
+  });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  global.fetch = originalFetch;
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 200);
+  assert.ok(typeof res._body.summary === 'string', 'Response should have a summary string');
+  assert.ok(res._body.summary.length > 0);
+});
+
+test('20. handler: POST extraction when Gemini returns code-fenced JSON still parses correctly', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-api-key';
+
+  const originalFetch = global.fetch;
+  const fakeNotice = {
+    title: 'Workshop on AI',
+    date: '2026-11-06',
+    time: '02:00 PM',
+    venue: 'Seminar Hall',
+    category: 'Event',
+    description: 'AI Workshop for all students.',
+  };
+  // Simulate Gemini wrapping its response in ```json ... ```
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      candidates: [{
+        content: {
+          parts: [{ text: '```json\n' + JSON.stringify([fakeNotice]) + '\n```' }],
+        },
+      }],
+    }),
+  });
+
+  const req = makePostReq({ text: 'AI workshop next Thursday at Seminar Hall at 2pm', today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  global.fetch = originalFetch;
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 200);
+  assert.ok(Array.isArray(res._body.notices));
+  assert.strictEqual(res._body.notices[0].title, 'Workshop on AI');
+});
+
+test('21. handler: POST extraction when Gemini API call fails returns 502', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-api-key';
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: false,
+    status: 503,
+    text: async () => 'Service Unavailable',
+  });
+
+  const req = makePostReq({ text: 'Exam notice text here', today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  global.fetch = originalFetch;
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 502);
+  assert.ok(res._body && typeof res._body.error === 'string');
+});
+
+test('22. handler: POST extraction when Gemini returns empty candidate returns 502', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-api-key';
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({ candidates: [] }),
+  });
+
+  const req = makePostReq({ text: 'Some notice text', today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  global.fetch = originalFetch;
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 502);
+});
+
+test('23. handler: text of exactly 3000 chars is accepted (not rejected)', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key';
+
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: false,
+    status: 401,
+    text: async () => 'Unauthorized',
+  });
+
+  const req = makePostReq({ text: 'z'.repeat(3000), today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  global.fetch = originalFetch;
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  // Must NOT be a 400 (input validation must pass); 502 expected from fake key failure
+  assert.notStrictEqual(res._status, 400, '3000-char text must pass input validation');
+});
+
+test('24. handler: summary with object (not array) items returns 400', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key';
+
+  const req = makePostReq({ type: 'summary', items: { title: 'Not an array' }, today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 400);
+});
+
+test('25. handler: x-forwarded-for with comma-separated IPs uses only the first IP for rate limiting', async () => {
+  // Exhaust rate limit using comma-formatted forwarded IP
+  const baseIp = `10.fwd.${Date.now()}`;
+  const forwardedHeader = `${baseIp}, 10.proxy.1, 10.proxy.2`;
+
+  const savedKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+
+  for (let i = 0; i < 10; i++) {
+    await handler({
+      method: 'POST',
+      headers: { 'x-forwarded-for': forwardedHeader },
+      body: { text: 'Notice text', today: '2026-11-01' },
+    }, makeMockRes());
+  }
+
+  const res11 = makeMockRes();
+  await handler({
+    method: 'POST',
+    headers: { 'x-forwarded-for': forwardedHeader },
+    body: { text: 'Should be limited', today: '2026-11-01' },
+  }, res11);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+
+  // If the handler correctly extracts just the first IP, the 11th call is rate-limited
+  assert.strictEqual(res11._status, 429,
+    'Should correctly parse the first IP from x-forwarded-for chain');
+});
+
+test('26. handler: response for 405 includes Allow header set to POST', async () => {
+  const req = { method: 'DELETE', headers: {}, body: {} };
+  const res = makeMockRes();
+  await handler(req, res);
+  assert.strictEqual(res._status, 405);
+  assert.ok(res._headers['Allow'], 'Allow header should be set');
+});
+
+test('27. handler: POST with text just over limit (3001 chars) includes limit in error message', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key';
+
+  const req = makePostReq({ text: 'a'.repeat(3001), today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 400);
+  assert.ok(
+    res._body && typeof res._body.error === 'string' && res._body.error.includes('3000'),
+    'Error message should mention the 3000-char limit'
+  );
+});
+
+test('28. handler: extraction with Gemini returning single object (not array) wraps it', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-api-key';
+
+  const originalFetch = global.fetch;
+  const singleNotice = {
+    title: 'Single Notice',
+    date: '2026-11-10',
+    time: '09:00 AM',
+    venue: 'Room 101',
+    category: 'Academic',
+    description: 'Single notice returned as object, not array.',
+  };
+  // Gemini returns a single object instead of array — handler should wrap it
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      candidates: [{
+        content: { parts: [{ text: JSON.stringify(singleNotice) }] },
+      }],
+    }),
+  });
+
+  const req = makePostReq({ text: 'Single notice content', today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  global.fetch = originalFetch;
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 200);
+  assert.ok(Array.isArray(res._body.notices), 'Handler should wrap single object in array');
+  assert.strictEqual(res._body.notices[0].title, 'Single Notice');
+});
+
+test('29. handler: POST summary items payload larger than 15000 chars returns 400', async () => {
+  const savedKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fake-key';
+
+  // Build an items array where the serialised JSON exceeds 15000 chars
+  const hugeItems = Array.from({ length: 60 }, (_, i) => ({
+    title: `Notice ${i}`,
+    date: '2026-11-05',
+    time: '10:00 AM',
+    venue: 'A'.repeat(100),
+    category: 'Academic',
+    description: 'D'.repeat(300),
+  }));
+
+  const req = makePostReq({ type: 'summary', items: hugeItems, today: '2026-11-01' });
+  const res = makeMockRes();
+  await handler(req, res);
+
+  if (savedKey !== undefined) process.env.GEMINI_API_KEY = savedKey;
+  else delete process.env.GEMINI_API_KEY;
+
+  assert.strictEqual(res._status, 400,
+    'Payload exceeding 15000 chars should be rejected with 400');
+});
+
+test('30. handler: error body always contains an "error" string property', async () => {
+  // Test multiple error scenarios and confirm the shape is consistent
+  const scenarios = [
+    // [method, body, ip]
+    ['GET', {}, 'err-shape-1'],
+    ['POST', {}, 'err-shape-2'],
+  ];
+
+  for (const [method, body, ipSuffix] of scenarios) {
+    const req = { method, headers: { 'x-forwarded-for': ipSuffix }, body };
+    const res = makeMockRes();
+    await handler(req, res);
+    assert.ok(
+      res._body && typeof res._body.error === 'string' && res._body.error.length > 0,
+      `Scenario [${method}] should return { error: string }, got: ${JSON.stringify(res._body)}`
+    );
+  }
+});
