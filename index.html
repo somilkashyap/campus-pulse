@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Campus Pulse - One place for students to track notices, deadlines, and campus events.">
+  <title>Campus Pulse | Student Notice & Deadline Tracker</title>
+  
+  <!-- Tailwind CSS Play CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            google: {
+              blue: '#1a73e8',
+              blueHover: '#1557b0',
+              blueLight: '#e8f0fe',
+              blueDark: '#174ea6'
+            }
+          },
+          boxShadow: {
+            soft: '0 2px 10px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.02)',
+            'soft-lg': '0 10px 25px -5px rgba(0, 0, 0, 0.06), 0 8px 10px -6px rgba(0, 0, 0, 0.04)',
+          }
+        }
+      }
+    };
+  </script>
+
+  <!-- Custom Stylesheet -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-100 font-sans antialiased transition-colors duration-200 flex flex-col">
+
+  <!-- 1. Sticky Header -->
+  <header class="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 transition-colors duration-200">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between gap-4">
+      <!-- Logo & Brand Info -->
+      <div class="flex items-center gap-3">
+        <span class="text-3xl select-none" role="img" aria-label="Campus Pulse Logo">🎓</span>
+        <div>
+          <h1 class="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white leading-tight">
+            Campus Pulse
+          </h1>
+          <p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium">
+            Never miss a notice again
+          </p>
+        </div>
+      </div>
+
+      <!-- Theme Toggle Button -->
+      <button 
+        id="themeToggleBtn"
+        type="button" 
+        class="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-all border border-slate-200/80 dark:border-slate-700 active:scale-95 cursor-pointer"
+        aria-label="Toggle light and dark mode"
+      >
+        <span id="themeToggleIcon" class="text-lg select-none" aria-hidden="true">🌙</span>
+        <span id="themeToggleText" class="hidden sm:inline text-xs font-semibold">Dark Mode</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8">
+
+    <!-- 2. "Paste a notice" Card -->
+    <section aria-labelledby="paste-notice-heading" class="bg-white dark:bg-slate-800 rounded-2xl p-5 sm:p-6 shadow-soft border border-slate-200 dark:border-slate-700/80 transition-shadow hover:shadow-soft-lg">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-xl select-none" aria-hidden="true">📥</span>
+          <h2 id="paste-notice-heading" class="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
+            Paste a notice
+          </h2>
+        </div>
+        <span class="text-xs text-slate-500 dark:text-slate-400">
+          Paste WhatsApp, Telegram, or email updates
+        </span>
+      </div>
+
+      <!-- Large Textarea with WhatsApp message placeholder -->
+      <div class="relative">
+        <textarea 
+          id="noticeInputText"
+          rows="4"
+          class="w-full rounded-xl p-3.5 text-sm sm:text-base border border-slate-300 dark:border-slate-600 bg-slate-50/70 dark:bg-slate-900/60 text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-google-blue focus:bg-white dark:focus:bg-slate-900 transition-all resize-y"
+          placeholder="*URGENT: CS301 Mid-Term Exam Rescheduled!* &#10;Hey everyone, please note that the CS301 Database Systems mid-term exam scheduled for tomorrow has been shifted to Friday, 10:30 AM in Auditorium Hall B.&#10;Carry your student ID cards and admit slips. Late entry will not be permitted!&#10;- Prof. Sharma (HOD CSE)"
+          aria-label="Paste notice text from WhatsApp or email"
+        ></textarea>
+      </div>
+
+      <!-- Actions Bar -->
+      <div class="mt-3.5 flex flex-wrap items-center justify-between gap-3">
+        <p class="text-xs text-slate-400 dark:text-slate-500">
+          💡 Tip: Instant extraction parses dates, venues, and timings automatically.
+        </p>
+        <div class="flex items-center gap-2">
+          <button 
+            id="clearNoticeBtn"
+            type="button" 
+            class="px-4 py-2 rounded-xl text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/60 transition-colors cursor-pointer"
+            aria-label="Clear pasted notice text"
+          >
+            Clear
+          </button>
+          <button 
+            id="extractNoticeBtn"
+            type="button" 
+            class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-google-blue hover:bg-google-blueHover shadow-sm active:scale-95 transition-all cursor-pointer"
+            aria-label="Extract notice details"
+          >
+            <span>✨</span>
+            <span>Extract</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. "Needs attention today" Section -->
+    <section aria-labelledby="today-heading" class="space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2.5">
+          <span class="flex h-3 w-3 relative">
+            <span class="pulse-indicator absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-3 w-3 bg-rose-500"></span>
+          </span>
+          <h2 id="today-heading" class="text-lg sm:text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+            Needs attention today
+          </h2>
+        </div>
+        <span id="todayCountBadge" class="text-xs font-semibold px-2.5 py-1 rounded-full bg-rose-100 dark:bg-rose-950/70 text-rose-700 dark:text-rose-300 border border-rose-200/80 dark:border-rose-900">
+          0 items
+        </span>
+      </div>
+
+      <!-- Dynamic Today Container (Populated via JS using textContent) -->
+      <div id="todayContainer" class="space-y-3"></div>
+    </section>
+
+    <!-- 4. Controls: Search, Category Chips, List/Calendar Toggle -->
+    <section aria-label="Notice Controls" class="space-y-4">
+      <div class="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+        <!-- Search Bar -->
+        <div class="relative flex-1">
+          <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400 select-none">
+            🔍
+          </div>
+          <input 
+            type="text" 
+            id="searchInput"
+            placeholder="Search by title, venue, or keyword..."
+            class="w-full pl-10 pr-10 py-2.5 text-sm sm:text-base rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-google-blue transition-all"
+            aria-label="Search notices by title, venue, or keyword"
+          >
+          <button 
+            id="clearSearchBtn"
+            type="button" 
+            class="hidden absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer text-sm font-bold"
+            aria-label="Clear search query"
+          >
+            ✕
+          </button>
+        </div>
+
+        <!-- List / Calendar View Toggle -->
+        <div class="inline-flex p-1 bg-slate-200/80 dark:bg-slate-800 rounded-xl border border-slate-300/60 dark:border-slate-700 select-none self-start md:self-auto" role="group" aria-label="View switcher">
+          <button 
+            id="listViewBtn"
+            type="button"
+            class="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-all bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm cursor-pointer"
+            aria-pressed="true"
+            aria-label="Switch to list view"
+          >
+            <span>📋</span>
+            <span>List</span>
+          </button>
+          <button 
+            id="calendarViewBtn"
+            type="button"
+            class="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-all text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+            aria-pressed="false"
+            aria-label="Switch to calendar view"
+          >
+            <span>📅</span>
+            <span>Calendar</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Category Chips Row (Horizontal scroll on mobile, flex on desktop) -->
+      <div class="relative">
+        <div 
+          id="categoryChipsContainer" 
+          class="flex items-center gap-2 overflow-x-auto pb-1 hide-scrollbar -mx-1 px-1"
+          role="toolbar" 
+          aria-label="Filter notices by category"
+        >
+          <!-- Chips populated by JavaScript -->
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. Notices Display Area -->
+    <section aria-labelledby="all-notices-heading">
+      <!-- List View Container -->
+      <div id="listViewSection" class="space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 id="all-notices-heading" class="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
+            All Notices (<span id="totalNoticesCount">0</span>)
+          </h2>
+          <span id="activeFilterBadge" class="hidden text-xs font-medium px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-200">
+            Filtered
+          </span>
+        </div>
+
+        <!-- Dynamic Notice Cards Container (Populated via JS using textContent) -->
+        <div id="noticeCardsContainer" class="space-y-4"></div>
+      </div>
+
+      <!-- Calendar View Placeholder Container -->
+      <div id="calendarViewSection" class="hidden">
+        <div class="bg-white dark:bg-slate-800 rounded-2xl p-8 sm:p-12 text-center border border-slate-200 dark:border-slate-700 shadow-soft">
+          <div class="text-5xl sm:text-6xl mb-4 select-none" aria-hidden="true">📅</div>
+          <h3 class="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white mb-2">
+            Calendar View is Coming Soon!
+          </h3>
+          <p class="text-slate-500 dark:text-slate-400 max-w-md mx-auto text-sm sm:text-base leading-relaxed mb-6">
+            We are crafting an interactive monthly calendar with color-coded tags and one-click Google Calendar / Outlook sync for deadlines.
+          </p>
+          <button 
+            id="backToListBtn"
+            type="button" 
+            class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-sm bg-google-blue hover:bg-google-blueHover text-white shadow-sm active:scale-95 transition-all cursor-pointer"
+            aria-label="Return to list view"
+          >
+            <span>📋</span>
+            <span>Return to List View</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast Notification Container (Aria-live polite for accessibility) -->
+  <div 
+    id="toastContainer" 
+    class="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5 pointer-events-none max-w-sm w-full px-4 sm:px-0"
+    role="region"
+    aria-label="Notifications"
+    aria-live="polite"
+  ></div>
+
+  <!-- Footer -->
+  <footer class="mt-auto border-t border-slate-200 dark:border-slate-800 py-6 text-center text-xs text-slate-400 dark:text-slate-500">
+    <div class="max-w-4xl mx-auto px-4">
+      <p class="font-medium text-slate-500 dark:text-slate-400">
+        🎓 Campus Pulse &bull; Keep track of notices, exams, and campus events.
+      </p>
+      <p class="mt-1">
+        All data is stored privately in your browser's local storage.
+      </p>
+    </div>
+  </footer>
+
+  <!-- Application Script -->
+  <script src="script.js"></script>
+</body>
+</html>
+
