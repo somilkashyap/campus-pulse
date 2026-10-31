@@ -1,7 +1,8 @@
 /**
  * Campus Pulse - Student Notice, Deadline & Event Tracker
  * Plain Vanilla JavaScript implementation.
- * Zero external libraries, zero backend.
+ * Zero external libraries, zero backend, no Firebase.
+ * Stores notices entirely in browser localStorage.
  * Strict DOM security: ALL text is rendered via textContent, never innerHTML.
  */
 
@@ -67,6 +68,9 @@ const elements = {
   noticeInputText: document.getElementById('noticeInputText'),
   clearNoticeBtn: document.getElementById('clearNoticeBtn'),
   extractNoticeBtn: document.getElementById('extractNoticeBtn'),
+  extractBtnIcon: document.getElementById('extractBtnIcon'),
+  extractBtnText: document.getElementById('extractBtnText'),
+  extractionFeedbackContainer: document.getElementById('extractionFeedbackContainer'),
   todayHeading: document.getElementById('today-heading'),
   todayCountBadge: document.getElementById('todayCountBadge'),
   todayContainer: document.getElementById('todayContainer'),
@@ -147,8 +151,21 @@ function formatReadableDate(isoDateString) {
   return `${monthStr} ${day}, ${year}`;
 }
 
+/**
+ * Blocks duplicates: checks if another notice has the exact same title & date.
+ */
+function isDuplicateNotice(title, date) {
+  const normTitle = (title || '').trim().toLowerCase();
+  const normDate = (date || '').trim();
+  return state.notices.some(n => 
+    (n.title || '').trim().toLowerCase() === normTitle &&
+    (n.date || '').trim() === normDate
+  );
+}
+
 // ==========================================
 // Preloaded Initial Samples
+// Format: {id, title, date (ISO), time, venue, category, description}
 // ==========================================
 
 /**
@@ -214,7 +231,7 @@ function generateSampleNotices() {
 }
 
 // ==========================================
-// Storage Helpers
+// Local Storage Management
 // ==========================================
 
 function loadNoticesFromStorage() {
@@ -230,7 +247,7 @@ function loadNoticesFromStorage() {
     console.warn('Could not read notices from localStorage:', err);
   }
 
-  // Fallback: preload default realistic samples
+  // Preload default realistic samples if storage is empty
   const defaults = generateSampleNotices();
   saveNoticesToStorage(defaults);
   return defaults;
@@ -242,6 +259,51 @@ function saveNoticesToStorage(noticesArray) {
   } catch (err) {
     console.warn('Could not save notices to localStorage:', err);
   }
+}
+
+/**
+ * Saves a new notice to localStorage in format:
+ * {id, title, date (ISO), time, venue, category, description}
+ */
+function saveNotice(noticeData) {
+  const cleanTitle = (noticeData.title || '').trim();
+  const cleanDate = (noticeData.date || '').trim() || getTodayISO();
+  const cleanTime = (noticeData.time || '').trim() || 'Not specified';
+  const cleanVenue = (noticeData.venue || '').trim() || 'Not specified';
+  const cleanCategory = (noticeData.category || '').trim() || 'Other';
+  const cleanDescription = (noticeData.description || '').trim() || 'Not specified';
+
+  // Enforce duplicate check (same title and date)
+  if (isDuplicateNotice(cleanTitle, cleanDate)) {
+    showToast('⚠️ A notice with this title and date already exists!');
+    return false;
+  }
+
+  const newNotice = {
+    id: 'notice-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
+    title: cleanTitle,
+    date: cleanDate,
+    time: cleanTime,
+    venue: cleanVenue,
+    category: cleanCategory,
+    description: cleanDescription
+  };
+
+  state.notices.unshift(newNotice);
+  saveNoticesToStorage(state.notices);
+  renderAllSections();
+  showToast('✅ Notice added to your tracker!');
+  return true;
+}
+
+/**
+ * Deletes a notice by ID from localStorage and re-renders.
+ */
+function deleteNotice(noticeId) {
+  state.notices = state.notices.filter(n => n.id !== noticeId);
+  saveNoticesToStorage(state.notices);
+  renderAllSections();
+  showToast('🗑️ Notice deleted.');
 }
 
 // ==========================================
@@ -335,8 +397,8 @@ function showToast(message) {
  * Creates a category badge element.
  */
 function createCategoryBadge(categoryName) {
-  const catObj = CATEGORIES.find(c => c.name.toLowerCase() === categoryName.toLowerCase()) || {
-    name: categoryName,
+  const catObj = CATEGORIES.find(c => c.name.toLowerCase() === (categoryName || '').toLowerCase()) || {
+    name: categoryName || 'Other',
     emoji: '📌',
     badgeClass: 'bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-300 border-slate-200 dark:border-slate-700'
   };
@@ -442,9 +504,38 @@ function createNoticeCardElement(notice, isUrgentToday = false) {
 
   const dateSubtext = document.createElement('span');
   dateSubtext.className = 'text-xs text-slate-400 dark:text-slate-500';
-  dateSubtext.textContent = `Scheduled: ${notice.date}`;
+  dateSubtext.textContent = `Date: ${notice.date}`;
   footerRow.appendChild(dateSubtext);
 
+  const actionsDiv = document.createElement('div');
+  actionsDiv.className = 'flex items-center gap-1.5';
+
+  // Delete button
+  const deleteBtn = document.createElement('button');
+  deleteBtn.type = 'button';
+  deleteBtn.className = 'inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/60 transition-colors cursor-pointer';
+  deleteBtn.setAttribute('aria-label', `Delete notice: ${notice.title}`);
+
+  const delIcon = document.createElement('span');
+  delIcon.textContent = '🗑️';
+  delIcon.setAttribute('aria-hidden', 'true');
+
+  const delText = document.createElement('span');
+  delText.textContent = 'Delete';
+
+  deleteBtn.appendChild(delIcon);
+  deleteBtn.appendChild(delText);
+
+  deleteBtn.addEventListener('click', () => {
+    const confirmed = window.confirm(`Delete notice "${notice.title}"?`);
+    if (confirmed) {
+      deleteNotice(notice.id);
+    }
+  });
+
+  actionsDiv.appendChild(deleteBtn);
+
+  // Copy Notice button
   const copyBtn = document.createElement('button');
   copyBtn.type = 'button';
   copyBtn.className = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:text-google-blue dark:text-slate-300 dark:hover:text-google-blue hover:bg-blue-50 dark:hover:bg-slate-700/60 transition-colors cursor-pointer';
@@ -454,7 +545,7 @@ function createNoticeCardElement(notice, isUrgentToday = false) {
   copyIcon.textContent = '📋';
   copyIcon.setAttribute('aria-hidden', 'true');
   const copyText = document.createElement('span');
-  copyText.textContent = 'Copy Notice';
+  copyText.textContent = 'Copy';
   
   copyBtn.appendChild(copyIcon);
   copyBtn.appendChild(copyText);
@@ -468,7 +559,8 @@ function createNoticeCardElement(notice, isUrgentToday = false) {
     });
   });
 
-  footerRow.appendChild(copyBtn);
+  actionsDiv.appendChild(copyBtn);
+  footerRow.appendChild(actionsDiv);
   card.appendChild(footerRow);
 
   return card;
@@ -571,7 +663,7 @@ function renderNoticesList() {
 
   // Filter notices by category and search query
   const filteredNotices = state.notices.filter(notice => {
-    const matchesCategory = categoryFilter === 'all' || notice.category.toLowerCase() === categoryFilter;
+    const matchesCategory = categoryFilter === 'all' || (notice.category || '').toLowerCase() === categoryFilter;
 
     if (!matchesCategory) return false;
 
@@ -589,7 +681,7 @@ function renderNoticesList() {
   filteredNotices.sort((a, b) => {
     if (a.date === todayISO && b.date !== todayISO) return -1;
     if (b.date === todayISO && a.date !== todayISO) return 1;
-    return a.date.localeCompare(b.date);
+    return (a.date || '').localeCompare(b.date || '');
   });
 
   // Update total count indicator
@@ -702,6 +794,373 @@ function setView(viewName) {
 }
 
 // ==========================================
+// AI Extraction Engine (Gemini 2.5 Flash via /api/gemini)
+// ==========================================
+
+/**
+ * Calls /api/gemini serverless endpoint to extract notice details from pasted message.
+ */
+async function handleExtractNotice(textOverride = null) {
+  const rawText = textOverride !== null ? textOverride : elements.noticeInputText.value;
+  const noticeText = (rawText || '').trim();
+
+  if (!noticeText) {
+    showToast('ℹ️ Please paste a notice in the box first!');
+    elements.noticeInputText.focus();
+    return;
+  }
+
+  if (noticeText.length > 3000) {
+    showToast('⚠️ Notice text exceeds the 3000-character limit.');
+    return;
+  }
+
+  // Clear previous feedback and display loading spinner
+  elements.extractionFeedbackContainer.textContent = '';
+  elements.extractNoticeBtn.disabled = true;
+  elements.extractNoticeBtn.classList.add('opacity-60', 'cursor-not-allowed');
+  elements.extractBtnIcon.className = 'spinner-icon';
+  elements.extractBtnIcon.textContent = '⏳';
+  elements.extractBtnText.textContent = 'Extracting...';
+
+  try {
+    const response = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text: noticeText,
+        today: getTodayISO()
+      })
+    });
+
+    if (!response.ok) {
+      let errorMsg = 'Failed to extract notice details.';
+      try {
+        const errorData = await response.json();
+        if (errorData && errorData.error) {
+          errorMsg = errorData.error;
+        }
+      } catch (_) {}
+      renderExtractionErrorCard(errorMsg, noticeText);
+      return;
+    }
+
+    const payload = await response.json();
+    const noticesList = payload.notices;
+
+    if (!Array.isArray(noticesList) || noticesList.length === 0) {
+      renderExtractionErrorCard('No distinct campus notices or deadlines could be recognized in this message.', noticeText);
+      return;
+    }
+
+    // Render editable preview card with Confirm/Cancel
+    renderEditablePreviewCard(noticesList[0], noticeText);
+    showToast('✨ Notice extracted! Review details below before saving.');
+  } catch (err) {
+    console.error('Error during AI notice extraction:', err);
+    renderExtractionErrorCard('Network or server connection failed. Please check your connection and try again.', noticeText);
+  } finally {
+    // Restore Extract Button State
+    elements.extractNoticeBtn.disabled = false;
+    elements.extractNoticeBtn.classList.remove('opacity-60', 'cursor-not-allowed');
+    elements.extractBtnIcon.className = '';
+    elements.extractBtnIcon.textContent = '✨';
+    elements.extractBtnText.textContent = 'Extract';
+  }
+}
+
+/**
+ * Renders an editable preview card for the extracted notice.
+ * Strictly uses textContent and document.createElement (zero innerHTML).
+ */
+function renderEditablePreviewCard(extracted, originalText) {
+  elements.extractionFeedbackContainer.textContent = '';
+
+  // Validate fields and map missing to "Not specified"
+  const initialTitle = extracted.title && extracted.title !== 'Not specified' ? extracted.title : 'Notice Update';
+  const initialDate = extracted.date && extracted.date !== 'Not specified' ? extracted.date : getTodayISO();
+  const initialTime = extracted.time ? extracted.time : 'Not specified';
+  const initialVenue = extracted.venue ? extracted.venue : 'Not specified';
+  const initialCategory = CATEGORIES.some(c => c.name.toLowerCase() === (extracted.category || '').toLowerCase() && c.name !== 'All')
+    ? extracted.category
+    : 'Other';
+  const initialDesc = extracted.description ? extracted.description : 'Not specified';
+
+  // Container Card
+  const previewCard = document.createElement('div');
+  previewCard.className = 'border-2 border-google-blue/30 dark:border-blue-700/60 bg-blue-50/20 dark:bg-slate-900/60 rounded-2xl p-4 sm:p-6 shadow-soft space-y-4';
+
+  // Preview Header
+  const headerDiv = document.createElement('div');
+  headerDiv.className = 'flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200/80 dark:border-slate-700/70';
+
+  const titleGroup = document.createElement('div');
+  titleGroup.className = 'flex items-center gap-2';
+
+  const iconSpan = document.createElement('span');
+  iconSpan.textContent = '✨';
+  iconSpan.className = 'text-xl';
+  iconSpan.setAttribute('aria-hidden', 'true');
+
+  const titleH3 = document.createElement('h3');
+  titleH3.className = 'text-base font-bold text-slate-900 dark:text-white';
+  titleH3.textContent = 'Editable Preview (AI Extracted)';
+
+  titleGroup.appendChild(iconSpan);
+  titleGroup.appendChild(titleH3);
+
+  const subBadge = document.createElement('span');
+  subBadge.className = 'text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-google-blue dark:text-blue-300 border border-blue-200 dark:border-blue-800';
+  subBadge.textContent = 'Review & Edit';
+
+  headerDiv.appendChild(titleGroup);
+  headerDiv.appendChild(subBadge);
+  previewCard.appendChild(headerDiv);
+
+  // Form Fields Grid
+  const formGrid = document.createElement('div');
+  formGrid.className = 'grid grid-cols-1 sm:grid-cols-2 gap-3.5';
+
+  // Field: Title
+  const titleField = document.createElement('div');
+  titleField.className = 'sm:col-span-2';
+  const titleLabel = document.createElement('label');
+  titleLabel.className = 'block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1';
+  titleLabel.textContent = 'Notice Title *';
+  const titleInput = document.createElement('input');
+  titleInput.type = 'text';
+  titleInput.maxLength = 150;
+  titleInput.value = initialTitle;
+  titleInput.className = 'w-full px-3 py-2 text-sm rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-google-blue';
+  titleInput.setAttribute('aria-label', 'Edit notice title');
+  titleField.appendChild(titleLabel);
+  titleField.appendChild(titleInput);
+  formGrid.appendChild(titleField);
+
+  // Field: Category
+  const catField = document.createElement('div');
+  const catLabel = document.createElement('label');
+  catLabel.className = 'block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1';
+  catLabel.textContent = 'Category *';
+  const catSelect = document.createElement('select');
+  catSelect.className = 'w-full px-3 py-2 text-sm rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-google-blue';
+  catSelect.setAttribute('aria-label', 'Select category');
+  CATEGORIES.filter(c => c.name !== 'All').forEach(cat => {
+    const opt = document.createElement('option');
+    opt.value = cat.name;
+    opt.textContent = `${cat.emoji} ${cat.name}`;
+    if (cat.name.toLowerCase() === initialCategory.toLowerCase()) {
+      opt.selected = true;
+    }
+    catSelect.appendChild(opt);
+  });
+  catField.appendChild(catLabel);
+  catField.appendChild(catSelect);
+  formGrid.appendChild(catField);
+
+  // Field: Date
+  const dateField = document.createElement('div');
+  const dateLabel = document.createElement('label');
+  dateLabel.className = 'block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1';
+  dateLabel.textContent = 'Date (ISO YYYY-MM-DD) *';
+  const dateInput = document.createElement('input');
+  dateInput.type = 'date';
+  dateInput.value = /^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate : getTodayISO();
+  dateInput.className = 'w-full px-3 py-2 text-sm rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-google-blue';
+  dateInput.setAttribute('aria-label', 'Edit notice date');
+  dateField.appendChild(dateLabel);
+  dateField.appendChild(dateInput);
+  formGrid.appendChild(dateField);
+
+  // Field: Time
+  const timeField = document.createElement('div');
+  const timeLabel = document.createElement('label');
+  timeLabel.className = 'block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1';
+  timeLabel.textContent = 'Time';
+  const timeInput = document.createElement('input');
+  timeInput.type = 'text';
+  timeInput.value = initialTime;
+  timeInput.placeholder = 'e.g. 10:30 AM or Not specified';
+  timeInput.className = 'w-full px-3 py-2 text-sm rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-google-blue';
+  timeInput.setAttribute('aria-label', 'Edit notice time');
+  timeField.appendChild(timeLabel);
+  timeField.appendChild(timeInput);
+  formGrid.appendChild(timeField);
+
+  // Field: Venue
+  const venueField = document.createElement('div');
+  const venueLabel = document.createElement('label');
+  venueLabel.className = 'block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1';
+  venueLabel.textContent = 'Venue';
+  const venueInput = document.createElement('input');
+  venueInput.type = 'text';
+  venueInput.value = initialVenue;
+  venueInput.placeholder = 'e.g. Auditorium Hall B or Not specified';
+  venueInput.className = 'w-full px-3 py-2 text-sm rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-google-blue';
+  venueInput.setAttribute('aria-label', 'Edit notice venue');
+  venueField.appendChild(venueLabel);
+  venueField.appendChild(venueInput);
+  formGrid.appendChild(venueField);
+
+  // Field: Description
+  const descField = document.createElement('div');
+  descField.className = 'sm:col-span-2';
+  const descLabel = document.createElement('label');
+  descLabel.className = 'block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1';
+  descLabel.textContent = 'Description';
+  const descTextarea = document.createElement('textarea');
+  descTextarea.rows = 3;
+  descTextarea.value = initialDesc;
+  descTextarea.className = 'w-full px-3 py-2 text-sm rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-google-blue resize-y';
+  descTextarea.setAttribute('aria-label', 'Edit notice description');
+  descField.appendChild(descLabel);
+  descField.appendChild(descTextarea);
+  formGrid.appendChild(descField);
+
+  previewCard.appendChild(formGrid);
+
+  // Preview Action Buttons (Confirm / Cancel)
+  const actionsBar = document.createElement('div');
+  actionsBar.className = 'pt-2 flex flex-wrap items-center justify-end gap-2.5';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'px-4 py-2 rounded-xl text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors cursor-pointer';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.setAttribute('aria-label', 'Cancel notice preview');
+  cancelBtn.addEventListener('click', () => {
+    elements.extractionFeedbackContainer.textContent = '';
+    showToast('Notice extraction discarded.');
+  });
+
+  const confirmBtn = document.createElement('button');
+  confirmBtn.type = 'button';
+  confirmBtn.className = 'inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-google-blue hover:bg-google-blueHover shadow-sm active:scale-95 transition-all cursor-pointer';
+  confirmBtn.setAttribute('aria-label', 'Confirm and save notice');
+
+  const checkSpan = document.createElement('span');
+  checkSpan.textContent = '✅';
+  checkSpan.setAttribute('aria-hidden', 'true');
+  const btnTextSpan = document.createElement('span');
+  btnTextSpan.textContent = 'Confirm & Save';
+
+  confirmBtn.appendChild(checkSpan);
+  confirmBtn.appendChild(btnTextSpan);
+
+  confirmBtn.addEventListener('click', () => {
+    const finalTitle = titleInput.value.trim();
+    const finalDate = dateInput.value.trim() || getTodayISO();
+    const finalTime = timeInput.value.trim() || 'Not specified';
+    const finalVenue = venueInput.value.trim() || 'Not specified';
+    const finalCategory = catSelect.value || 'Other';
+    const finalDesc = descTextarea.value.trim() || 'Not specified';
+
+    if (!finalTitle || finalTitle.toLowerCase() === 'not specified') {
+      showToast('⚠️ Please enter a title for the notice.');
+      titleInput.focus();
+      return;
+    }
+
+    // Check duplicate notice
+    if (isDuplicateNotice(finalTitle, finalDate)) {
+      showToast('⚠️ A notice with this title and date already exists!');
+      return;
+    }
+
+    const saved = saveNotice({
+      title: finalTitle,
+      date: finalDate,
+      time: finalTime,
+      venue: finalVenue,
+      category: finalCategory,
+      description: finalDesc
+    });
+
+    if (saved) {
+      elements.noticeInputText.value = '';
+      elements.extractionFeedbackContainer.textContent = '';
+    }
+  });
+
+  actionsBar.appendChild(cancelBtn);
+  actionsBar.appendChild(confirmBtn);
+  previewCard.appendChild(actionsBar);
+
+  elements.extractionFeedbackContainer.appendChild(previewCard);
+  previewCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/**
+ * Renders a friendly error card with a Retry button.
+ * Uses textContent and document.createElement (never innerHTML).
+ */
+function renderExtractionErrorCard(errorMessage, textToRetry) {
+  elements.extractionFeedbackContainer.textContent = '';
+
+  const errorCard = document.createElement('div');
+  errorCard.className = 'border border-rose-300 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/40 rounded-2xl p-4 sm:p-5 shadow-soft space-y-3';
+
+  const headerDiv = document.createElement('div');
+  headerDiv.className = 'flex items-center gap-2';
+
+  const iconSpan = document.createElement('span');
+  iconSpan.textContent = '⚠️';
+  iconSpan.className = 'text-xl';
+  iconSpan.setAttribute('aria-hidden', 'true');
+
+  const errorTitle = document.createElement('h3');
+  errorTitle.className = 'text-sm sm:text-base font-bold text-rose-800 dark:text-rose-200';
+  errorTitle.textContent = 'Extraction Notice';
+
+  headerDiv.appendChild(iconSpan);
+  headerDiv.appendChild(errorTitle);
+  errorCard.appendChild(headerDiv);
+
+  const errorP = document.createElement('p');
+  errorP.className = 'text-xs sm:text-sm text-rose-700 dark:text-rose-300 leading-relaxed';
+  errorP.textContent = errorMessage;
+  errorCard.appendChild(errorP);
+
+  const btnRow = document.createElement('div');
+  btnRow.className = 'flex items-center gap-2 pt-1';
+
+  const retryBtn = document.createElement('button');
+  retryBtn.type = 'button';
+  retryBtn.className = 'inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white bg-google-blue hover:bg-google-blueHover shadow-sm active:scale-95 transition-all cursor-pointer';
+  retryBtn.setAttribute('aria-label', 'Retry extracting notice text');
+
+  const retryIcon = document.createElement('span');
+  retryIcon.textContent = '🔄';
+  retryIcon.setAttribute('aria-hidden', 'true');
+  const retryText = document.createElement('span');
+  retryText.textContent = 'Retry Extraction';
+
+  retryBtn.appendChild(retryIcon);
+  retryBtn.appendChild(retryText);
+
+  retryBtn.addEventListener('click', () => {
+    handleExtractNotice(textToRetry);
+  });
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'px-3.5 py-2 rounded-xl text-xs sm:text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors cursor-pointer';
+  dismissBtn.textContent = 'Dismiss';
+  dismissBtn.setAttribute('aria-label', 'Dismiss error message');
+  dismissBtn.addEventListener('click', () => {
+    elements.extractionFeedbackContainer.textContent = '';
+  });
+
+  btnRow.appendChild(retryBtn);
+  btnRow.appendChild(dismissBtn);
+  errorCard.appendChild(btnRow);
+
+  elements.extractionFeedbackContainer.appendChild(errorCard);
+}
+
+// ==========================================
 // Event Listeners & Initialization
 // ==========================================
 
@@ -734,19 +1193,15 @@ function setupEventListeners() {
   elements.calendarViewBtn.addEventListener('click', () => setView('calendar'));
   elements.backToListBtn.addEventListener('click', () => setView('list'));
 
-  // Paste Card: Extract Button (UI only for now, shows coming soon toast)
+  // Paste Card: Extract Button wired to AI extraction engine
   elements.extractNoticeBtn.addEventListener('click', () => {
-    const text = elements.noticeInputText.value.trim();
-    if (!text) {
-      showToast('ℹ️ Notice Extraction: Coming soon! AI parsing will automatically create cards from text.');
-    } else {
-      showToast('🚀 AI Extraction coming soon! Auto-parsing dates & venues will launch in the next update.');
-    }
+    handleExtractNotice();
   });
 
   // Paste Card: Clear Button
   elements.clearNoticeBtn.addEventListener('click', () => {
     elements.noticeInputText.value = '';
+    elements.extractionFeedbackContainer.textContent = '';
     elements.noticeInputText.focus();
   });
 }
@@ -766,4 +1221,3 @@ if (document.readyState === 'loading') {
 } else {
   initApp();
 }
-

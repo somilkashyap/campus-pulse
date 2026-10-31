@@ -112,11 +112,14 @@
             class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white bg-google-blue hover:bg-google-blueHover shadow-sm active:scale-95 transition-all cursor-pointer"
             aria-label="Extract notice details"
           >
-            <span>✨</span>
-            <span>Extract</span>
+            <span id="extractBtnIcon">✨</span>
+            <span id="extractBtnText">Extract</span>
           </button>
         </div>
       </div>
+
+      <!-- AI Extraction Feedback & Editable Preview Container -->
+      <div id="extractionFeedbackContainer" class="mt-4 empty:hidden"></div>
     </section>
 
     <!-- 3. "Needs attention today" Section -->
@@ -260,8 +263,8 @@
       <p class="font-medium text-slate-500 dark:text-slate-400">
         🎓 Campus Pulse &bull; Keep track of notices, exams, and campus events.
       </p>
-      <p class="mt-1">
-        All data is stored privately in your browser's local storage.
+      <p class="mt-1 text-slate-400 dark:text-slate-500">
+        All notices and deadlines are saved locally in your browser (localStorage).
       </p>
     </div>
   </footer>
