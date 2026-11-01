@@ -1179,9 +1179,9 @@ function computeNoticesHash() {
  * On network failure: returns { ok: false, error: string }
  * On server response: returns { ok: true, response }
  */
-async function fetchGeminiWithTimeout(payload, timeoutMs = 25000) {
+async function fetchGeminiWithTimeout(payload, timeoutMs = 30000) {
   let attempt = 0;
-  const maxAttempts = 2; // 1 initial + 1 automatic retry on timeout
+  const maxAttempts = 2; // 1 initial + 1 automatic retry on timeout or 503/504
 
   while (attempt < maxAttempts) {
     attempt++;
@@ -1199,6 +1199,13 @@ async function fetchGeminiWithTimeout(payload, timeoutMs = 25000) {
       });
 
       clearTimeout(timerId);
+
+      // Retry once automatically on 503 or 504
+      if ((response.status === 503 || response.status === 504) && attempt < maxAttempts) {
+        console.warn(`Request to /api/gemini returned ${response.status}. Retrying once automatically...`);
+        continue;
+      }
+
       return { ok: true, response };
     } catch (err) {
       clearTimeout(timerId);
@@ -1206,7 +1213,7 @@ async function fetchGeminiWithTimeout(payload, timeoutMs = 25000) {
       const isTimeout = err && (err.name === 'AbortError' || controller.signal.aborted);
       if (isTimeout) {
         if (attempt < maxAttempts) {
-          console.warn('Request to /api/gemini timed out after 25s. Retrying once automatically...');
+          console.warn('Request to /api/gemini timed out after 30s. Retrying once automatically...');
           continue; // retry once
         }
         return {
@@ -1268,7 +1275,7 @@ async function handleGenerateWeeklySummary() {
       type: 'summary',
       items: activeUpcomingNotices,
       today: getTodayISO()
-    }, 25000);
+    }, 30000);
 
     if (!fetchResult.ok) {
       renderSummaryErrorCard(fetchResult.error);
@@ -1499,7 +1506,7 @@ async function handleExtractNotice(textOverride = null) {
     const fetchResult = await fetchGeminiWithTimeout({
       text: noticeText,
       today: getTodayISO()
-    }, 25000);
+    }, 30000);
 
     if (!fetchResult.ok) {
       renderExtractionErrorCard(fetchResult.error, noticeText);
