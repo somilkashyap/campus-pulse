@@ -1,6 +1,6 @@
 /**
  * Vercel Serverless Function: /api/gemini.js
- * Handles two modes using Google Gemini 2.5 Flash:
+ * Handles two modes using Google Gemini Flash:
  * 1. Extraction: POST { text, today } -> returns { notices: [...] }
  * 2. Summary:    POST { type: "summary", items, today } -> returns { summary: "..." }
  *
@@ -10,6 +10,8 @@
  * - Treats input text/items strictly as passive data (prompt injection defense)
  * - Returns JSON only, with maxOutputTokens set
  * - GEMINI_API_KEY kept securely on the server
+ * - Automatic model fallback on 404 / model-not-found
+ * - Detailed Google status and error message in response (never leaks API key)
  */
 
 // In-memory sliding window rate limiter: 10 requests / 60s per client IP
@@ -40,6 +42,84 @@ function checkRateLimit(ip) {
   recent.push(now);
   rateLimitMap.set(ip, recent);
   return true;
+}
+
+/**
+ * Calls Gemini API with automatic fallback if the requested model returns 404 / model-not-found.
+ * Model order: process.env.GEMINI_MODEL (default: "gemini-2.5-flash") -> "gemini-2.5-flash-lite" -> "gemini-flash-latest"
+ */
+async function callGeminiWithFallback(apiKey, systemInstructionText, userText, generationConfig) {
+  const defaultModel = (process.env.GEMINI_MODEL || '').trim() || 'gemini-2.5-flash';
+  const fallbackModels = ['gemini-2.5-flash-lite', 'gemini-flash-latest'];
+  const modelsToTry = [defaultModel, ...fallbackModels.filter(m => m !== defaultModel)];
+
+  let lastStatus = 502;
+  let lastErrorText = 'Failed to communicate with Gemini AI.';
+
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const model = modelsToTry[i];
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    const geminiResponse = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemInstructionText }]
+        },
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: userText }]
+          }
+        ],
+        generationConfig
+      })
+    });
+
+    if (geminiResponse.ok) {
+      const data = await geminiResponse.json();
+      return { ok: true, data, model };
+    }
+
+    lastStatus = geminiResponse.status;
+    const rawErrorText = await geminiResponse.text();
+    lastErrorText = rawErrorText;
+
+    // Check if error is 404 or model-not-found error
+    const isNotFound = geminiResponse.status === 404 ||
+      /not found|NOT_FOUND|not supported for generateContent/i.test(rawErrorText);
+
+    if (isNotFound && i < modelsToTry.length - 1) {
+      console.warn(`Gemini model "${model}" returned 404/not found. Retrying with fallback "${modelsToTry[i + 1]}"...`);
+      continue;
+    }
+
+    // Stop and return on other errors (400, 401, 403, 429, 500, etc.) or when fallbacks are exhausted
+    break;
+  }
+
+  // Parse Google's error message cleanly if possible
+  let parsedMessage = lastErrorText;
+  try {
+    const jsonErr = JSON.parse(lastErrorText);
+    if (jsonErr?.error?.message) {
+      parsedMessage = jsonErr.error.message;
+    }
+  } catch (_) {}
+
+  // Strip API key from error message to prevent any leakage
+  if (apiKey) {
+    parsedMessage = parsedMessage.split(apiKey).join('[REDACTED]');
+  }
+  parsedMessage = parsedMessage.replace(/key=[a-zA-Z0-9_\-]+/gi, 'key=[REDACTED]');
+  parsedMessage = parsedMessage.replace(/AIza[a-zA-Z0-9_\-]+/gi, '[REDACTED]');
+
+  return {
+    ok: false,
+    status: lastStatus,
+    error: parsedMessage
+  };
 }
 
 module.exports = async function handler(req, res) {
@@ -85,8 +165,6 @@ module.exports = async function handler(req, res) {
     ? today
     : new Date().toISOString().split('T')[0];
 
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-
   // ============================================================
   // MODE 1: WEEKLY SUMMARY ({ type: "summary", items, today })
   // ============================================================
@@ -129,37 +207,26 @@ Format requirements:
 - Return JSON only matching schema: { "summary": "string containing the readable digest with markdown formatting" }`;
 
     try {
-      const geminiResponse = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: summarySystemPrompt }]
-          },
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: `NOTICES TO SUMMARIZE FOR THIS WEEK:\n${itemsJsonString}` }]
-            }
-          ],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            maxOutputTokens: 1024,
-            temperature: 0.2
-          }
-        })
-      });
+      const result = await callGeminiWithFallback(
+        apiKey,
+        summarySystemPrompt,
+        `NOTICES TO SUMMARIZE FOR THIS WEEK:\n${itemsJsonString}`,
+        {
+          responseMimeType: 'application/json',
+          maxOutputTokens: 1024,
+          temperature: 0.2
+        }
+      );
 
-      if (!geminiResponse.ok) {
-        const errorText = await geminiResponse.text();
-        console.error('Gemini API returned error for summary:', geminiResponse.status, errorText);
+      if (!result.ok) {
+        console.error('Gemini API returned error for summary:', result.status, result.error);
         return res.status(502).json({
-          error: 'Failed to generate summary with Gemini AI. Please check your API key and quota.'
+          error: `Gemini API error (${result.status}): ${result.error}`,
+          status: result.status
         });
       }
 
-      const data = await geminiResponse.json();
-      const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const candidateText = result.data.candidates?.[0]?.content?.parts?.[0]?.text;
 
       if (!candidateText) {
         return res.status(502).json({ error: 'Gemini returned an empty response for summary.' });
@@ -227,37 +294,26 @@ PARSING REQUIREMENTS:
    }`;
 
   try {
-    const geminiResponse = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: extractionSystemPrompt }]
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: `DATA TO PARSE:\n${text}` }]
-          }
-        ],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          maxOutputTokens: 2048,
-          temperature: 0.1
-        }
-      })
-    });
+    const result = await callGeminiWithFallback(
+      apiKey,
+      extractionSystemPrompt,
+      `DATA TO PARSE:\n${text}`,
+      {
+        responseMimeType: 'application/json',
+        maxOutputTokens: 2048,
+        temperature: 0.1
+      }
+    );
 
-    if (!geminiResponse.ok) {
-      const errorText = await geminiResponse.text();
-      console.error('Gemini API returned error:', geminiResponse.status, errorText);
+    if (!result.ok) {
+      console.error('Gemini API returned error:', result.status, result.error);
       return res.status(502).json({
-        error: 'Failed to communicate with Gemini AI. Please check your API key and quota.'
+        error: `Gemini API error (${result.status}): ${result.error}`,
+        status: result.status
       });
     }
 
-    const data = await geminiResponse.json();
-    const candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const candidateText = result.data.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!candidateText) {
       return res.status(502).json({ error: 'Gemini returned an empty response.' });
