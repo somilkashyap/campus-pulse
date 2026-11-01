@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "api/gemini.js": {
+      "regions": ["bom1"],
+      "maxDuration": 30
+    }
+  }
+}

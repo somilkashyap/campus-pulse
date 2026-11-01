@@ -1173,6 +1173,60 @@ function computeNoticesHash() {
 }
 
 /**
+ * Calls /api/gemini with a 25-second AbortController timeout.
+ * Retries once automatically if a timeout occurs.
+ * On timeout failure: returns { ok: false, isTimeout: true, error: 'Server took too long, please retry' }
+ * On network failure: returns { ok: false, error: string }
+ * On server response: returns { ok: true, response }
+ */
+async function fetchGeminiWithTimeout(payload, timeoutMs = 25000) {
+  let attempt = 0;
+  const maxAttempts = 2; // 1 initial + 1 automatic retry on timeout
+
+  while (attempt < maxAttempts) {
+    attempt++;
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+
+      clearTimeout(timerId);
+      return { ok: true, response };
+    } catch (err) {
+      clearTimeout(timerId);
+
+      const isTimeout = err && (err.name === 'AbortError' || controller.signal.aborted);
+      if (isTimeout) {
+        if (attempt < maxAttempts) {
+          console.warn('Request to /api/gemini timed out after 25s. Retrying once automatically...');
+          continue; // retry once
+        }
+        return {
+          ok: false,
+          isTimeout: true,
+          error: 'Server took too long, please retry'
+        };
+      }
+
+      // Other network / client error
+      return {
+        ok: false,
+        isTimeout: false,
+        error: err?.message || 'Network connection failed. Please check your connection and retry.'
+      };
+    }
+  }
+}
+
+/**
  * Handles the "What do I need to know this week?" action.
  */
 async function handleGenerateWeeklySummary() {
@@ -1210,21 +1264,26 @@ async function handleGenerateWeeklySummary() {
   elements.aiSummaryCardContainer.textContent = '';
 
   try {
-    const response = await fetch('/api/gemini', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'summary',
-        items: activeUpcomingNotices,
-        today: getTodayISO()
-      })
-    });
+    const fetchResult = await fetchGeminiWithTimeout({
+      type: 'summary',
+      items: activeUpcomingNotices,
+      today: getTodayISO()
+    }, 25000);
+
+    if (!fetchResult.ok) {
+      renderSummaryErrorCard(fetchResult.error);
+      return;
+    }
+
+    const response = fetchResult.response;
 
     if (!response.ok) {
       let errMessage = 'Failed to generate weekly summary.';
       try {
         const errorData = await response.json();
-        if (errorData && errorData.error) errMessage = errorData.error;
+        if (errorData && (errorData.error || errorData.message)) {
+          errMessage = errorData.error || errorData.message;
+        }
       } catch (_) {}
       renderSummaryErrorCard(errMessage);
       return;
@@ -1253,7 +1312,10 @@ async function handleGenerateWeeklySummary() {
     showToast('✨ AI Weekly Digest generated!');
   } catch (err) {
     console.error('Error generating summary:', err);
-    renderSummaryErrorCard('Network or server connection failed. Please check your connection and retry.');
+    const msg = (err && (err.name === 'AbortError' || err.message?.includes('aborted')))
+      ? 'Server took too long, please retry'
+      : (err?.message || 'Failed to generate weekly summary. Please try again.');
+    renderSummaryErrorCard(msg);
   } finally {
     // Restore button state
     elements.aiSummaryBtn.disabled = false;
@@ -1434,23 +1496,24 @@ async function handleExtractNotice(textOverride = null) {
   elements.extractBtnText.textContent = 'Extracting...';
 
   try {
-    const response = await fetch('/api/gemini', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        text: noticeText,
-        today: getTodayISO()
-      })
-    });
+    const fetchResult = await fetchGeminiWithTimeout({
+      text: noticeText,
+      today: getTodayISO()
+    }, 25000);
+
+    if (!fetchResult.ok) {
+      renderExtractionErrorCard(fetchResult.error, noticeText);
+      return;
+    }
+
+    const response = fetchResult.response;
 
     if (!response.ok) {
       let errorMsg = 'Failed to extract notice details.';
       try {
         const errorData = await response.json();
-        if (errorData && errorData.error) {
-          errorMsg = errorData.error;
+        if (errorData && (errorData.error || errorData.message)) {
+          errorMsg = errorData.error || errorData.message;
         }
       } catch (_) {}
       renderExtractionErrorCard(errorMsg, noticeText);
@@ -1470,7 +1533,10 @@ async function handleExtractNotice(textOverride = null) {
     showToast('✨ Notice extracted! Review details below before saving.');
   } catch (err) {
     console.error('Error during AI notice extraction:', err);
-    renderExtractionErrorCard('Network or server connection failed. Please check your connection and try again.', noticeText);
+    const msg = (err && (err.name === 'AbortError' || err.message?.includes('aborted')))
+      ? 'Server took too long, please retry'
+      : (err?.message || 'Failed to extract notice details. Please try again.');
+    renderExtractionErrorCard(msg, noticeText);
   } finally {
     // Restore Extract Button State
     elements.extractNoticeBtn.disabled = false;

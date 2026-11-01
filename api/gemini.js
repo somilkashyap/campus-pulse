@@ -8,9 +8,10 @@
  * - Rate limited: 10 requests / min per IP
  * - Input character limit: 3000 chars (text) or reasonable items payload
  * - Treats input text/items strictly as passive data (prompt injection defense)
- * - Returns JSON only, with maxOutputTokens set
  * - GEMINI_API_KEY kept securely on the server
- * - Automatic model fallback on 404 / model-not-found
+ * - Default model: gemini-2.5-flash-lite (overridable by GEMINI_MODEL)
+ * - 8s timeout per Gemini call with AbortController
+ * - Automatic model fallback on 404, 429, or 5xx (up to 20s total)
  * - Detailed Google status and error message in response (never leaks API key)
  */
 
@@ -45,14 +46,18 @@ function checkRateLimit(ip) {
 }
 
 /**
- * Calls Gemini API with automatic fallback if the requested model returns 404 / model-not-found.
- * Model order: process.env.GEMINI_MODEL (default: "gemini-2.5-flash") -> "gemini-2.5-flash-lite" -> "gemini-flash-latest"
+ * Calls Gemini API with:
+ * - 8-second AbortController timeout per call
+ * - Fallbacks on 404, 429, or 5xx
+ * - Maximum 20 seconds total retry duration
+ * - Cleansed error messages with no API key leakage
  */
 async function callGeminiWithFallback(apiKey, systemInstructionText, userText, generationConfig) {
-  const defaultModel = (process.env.GEMINI_MODEL || '').trim() || 'gemini-2.5-flash';
-  const fallbackModels = ['gemini-2.5-flash-lite', 'gemini-flash-latest'];
+  const defaultModel = (process.env.GEMINI_MODEL || '').trim() || 'gemini-2.5-flash-lite';
+  const fallbackModels = ['gemini-2.5-flash', 'gemini-flash-latest'];
   const modelsToTry = [defaultModel, ...fallbackModels.filter(m => m !== defaultModel)];
 
+  const startTime = Date.now();
   let lastStatus = 502;
   let lastErrorText = 'Failed to communicate with Gemini AI.';
 
@@ -60,43 +65,70 @@ async function callGeminiWithFallback(apiKey, systemInstructionText, userText, g
     const model = modelsToTry[i];
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-    const geminiResponse = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: systemInstructionText }]
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: userText }]
-          }
-        ],
-        generationConfig
-      })
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-    if (geminiResponse.ok) {
-      const data = await geminiResponse.json();
-      return { ok: true, data, model };
+    try {
+      const geminiResponse = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: systemInstructionText }]
+          },
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: userText }]
+            }
+          ],
+          generationConfig
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (geminiResponse.ok) {
+        const data = await geminiResponse.json();
+        return { ok: true, data, model };
+      }
+
+      lastStatus = geminiResponse.status;
+      const rawErrorText = await geminiResponse.text();
+      lastErrorText = rawErrorText;
+
+      console.error(`Gemini API returned error for model "${model}":`, lastStatus, rawErrorText);
+
+      // Retry only on 404, 429, 5xx, or model-not-found patterns
+      const isRetryable = lastStatus === 404 ||
+                          lastStatus === 429 ||
+                          (lastStatus >= 500 && lastStatus <= 599) ||
+                          /not found|NOT_FOUND|not supported for generateContent/i.test(rawErrorText);
+
+      const elapsedMs = Date.now() - startTime;
+      if (isRetryable && i < modelsToTry.length - 1 && elapsedMs < 20000) {
+        console.warn(`Gemini model "${model}" returned ${lastStatus}. Retrying with fallback "${modelsToTry[i + 1]}" (elapsed ${elapsedMs}ms)...`);
+        continue;
+      }
+
+      break;
+    } catch (fetchErr) {
+      clearTimeout(timeoutId);
+      const isAbort = fetchErr.name === 'AbortError' || controller.signal.aborted;
+      lastStatus = isAbort ? 504 : 502;
+      lastErrorText = isAbort ? 'Gemini call timed out after 8 seconds.' : (fetchErr.message || 'Network error communicating with Gemini.');
+
+      console.error(`Gemini call error for model "${model}":`, lastStatus, lastErrorText);
+
+      const elapsedMs = Date.now() - startTime;
+      if (i < modelsToTry.length - 1 && elapsedMs < 20000) {
+        console.warn(`Retrying with fallback "${modelsToTry[i + 1]}" after error (elapsed ${elapsedMs}ms)...`);
+        continue;
+      }
+
+      break;
     }
-
-    lastStatus = geminiResponse.status;
-    const rawErrorText = await geminiResponse.text();
-    lastErrorText = rawErrorText;
-
-    // Check if error is 404 or model-not-found error
-    const isNotFound = geminiResponse.status === 404 ||
-      /not found|NOT_FOUND|not supported for generateContent/i.test(rawErrorText);
-
-    if (isNotFound && i < modelsToTry.length - 1) {
-      console.warn(`Gemini model "${model}" returned 404/not found. Retrying with fallback "${modelsToTry[i + 1]}"...`);
-      continue;
-    }
-
-    // Stop and return on other errors (400, 401, 403, 429, 500, etc.) or when fallbacks are exhausted
-    break;
   }
 
   // Parse Google's error message cleanly if possible
@@ -114,6 +146,10 @@ async function callGeminiWithFallback(apiKey, systemInstructionText, userText, g
   }
   parsedMessage = parsedMessage.replace(/key=[a-zA-Z0-9_\-]+/gi, 'key=[REDACTED]');
   parsedMessage = parsedMessage.replace(/AIza[a-zA-Z0-9_\-]+/gi, '[REDACTED]');
+
+  if (parsedMessage.length > 250) {
+    parsedMessage = parsedMessage.slice(0, 250) + '...';
+  }
 
   return {
     ok: false,
@@ -212,9 +248,11 @@ Format requirements:
         summarySystemPrompt,
         `NOTICES TO SUMMARIZE FOR THIS WEEK:\n${itemsJsonString}`,
         {
-          responseMimeType: 'application/json',
-          maxOutputTokens: 1024,
-          temperature: 0.2
+          maxOutputTokens: 600,
+          temperature: 0.1,
+          thinkingConfig: {
+            thinkingBudget: 0
+          }
         }
       );
 
@@ -300,8 +338,11 @@ PARSING REQUIREMENTS:
       `DATA TO PARSE:\n${text}`,
       {
         responseMimeType: 'application/json',
-        maxOutputTokens: 2048,
-        temperature: 0.1
+        maxOutputTokens: 1024,
+        temperature: 0.1,
+        thinkingConfig: {
+          thinkingBudget: 0
+        }
       }
     );
 
