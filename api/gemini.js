@@ -1,6 +1,6 @@
 /**
  * Vercel Serverless Function: /api/gemini.js
- * Handles two modes using Google Gemini Flash:
+ * Handles two modes using Google Gemini Flash models:
  * 1. Extraction: POST { text, today } -> returns { notices: [...] }
  * 2. Summary:    POST { type: "summary", items, today } -> returns { summary: "..." }
  *
@@ -9,17 +9,20 @@
  * - Input character limit: 3000 chars (text) or reasonable items payload
  * - Treats input text/items strictly as passive data (prompt injection defense)
  * - GEMINI_API_KEY kept securely on the server
- * - Model order: GEMINI_MODEL env (if set) -> gemini-2.5-flash-lite -> gemini-flash-latest -> gemini-2.5-flash
- * - 12s timeout per Gemini call with AbortController
- * - Automatic model fallback on 504 (timeout), 429, 500, 503, or 404 (up to 26s total)
- * - Friendly error message if all fail: "AI is busy, please retry in a few seconds"
- * - Detailed error logging with console.error for Vercel logs (never leaks API key)
+ * - Model order: GEMINI_MODEL (if set) -> gemini-3.5-flash-lite -> gemini-3.8-flash
+ * - Auto-discovery fallback if all models return 404
+ * - 15s timeout per attempt, 28s total budget with AbortController
+ * - Error format: "AI is busy, please retry in a few seconds (last error: <status> <reason>)"
+ * - Real errors logged via console.error for Vercel logs (never leaks API key)
  */
 
 // In-memory sliding window rate limiter: 10 requests / 60s per client IP
 const rateLimitMap = new Map();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 10;
+
+// Module-level cache for auto-discovered models
+let discoveredModelsCache = null;
 
 function checkRateLimit(ip) {
   const now = Date.now();
@@ -47,125 +50,279 @@ function checkRateLimit(ip) {
 }
 
 /**
+ * Sanitizes any message to guarantee no API key or key parameter leaks.
+ */
+function sanitizeMessage(msg, apiKey) {
+  if (!msg || typeof msg !== 'string') return '';
+  let clean = msg;
+  if (apiKey) {
+    clean = clean.split(apiKey).join('[REDACTED]');
+  }
+  clean = clean.replace(/key=[a-zA-Z0-9_\-]+/gi, 'key=[REDACTED]');
+  clean = clean.replace(/AIza[a-zA-Z0-9_\-]+/gi, '[REDACTED]');
+  return clean;
+}
+
+/**
+ * Auto-discovers valid Flash models supporting generateContent from Google Gemini API.
+ * Caches results in module-level discoveredModelsCache.
+ */
+async function discoverModels(apiKey) {
+  if (discoveredModelsCache && discoveredModelsCache.length > 0) {
+    return discoveredModelsCache;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+      method: 'GET',
+      headers: {
+        'x-goog-api-key': apiKey
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('Failed to auto-discover models:', res.status, sanitizeMessage(errText, apiKey));
+      return [];
+    }
+
+    const data = await res.json();
+    const list = data.models || [];
+
+    // Filter models:
+    // - supports generateContent
+    // - contains "flash"
+    // - skip image, tts, audio, live, embedding
+    const flashModels = list
+      .filter(m => {
+        const name = (m.name || '').toLowerCase();
+        const methods = m.supportedGenerationMethods || [];
+        if (!methods.includes('generateContent')) return false;
+        if (!name.includes('flash')) return false;
+        if (/image|tts|audio|live|embed/i.test(name)) return false;
+        return true;
+      })
+      .map(m => m.name.replace(/^models\//, ''));
+
+    // Sort: put names containing "lite" first
+    flashModels.sort((a, b) => {
+      const aLite = a.toLowerCase().includes('lite') ? 1 : 0;
+      const bLite = b.toLowerCase().includes('lite') ? 1 : 0;
+      return bLite - aLite;
+    });
+
+    const top3 = flashModels.slice(0, 3);
+    if (top3.length > 0) {
+      discoveredModelsCache = top3;
+      console.log('Auto-discovered Flash models:', discoveredModelsCache);
+    }
+    return top3;
+  } catch (err) {
+    console.error('Error during model auto-discovery:', sanitizeMessage(err?.message, apiKey));
+    return [];
+  }
+}
+
+/**
+ * Executes a single POST request to generateContent with AbortController timeout.
+ */
+async function executeGeminiRequest(apiUrl, systemInstructionText, userText, config, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const payload = {
+      systemInstruction: {
+        parts: [{ text: systemInstructionText }]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: userText }]
+        }
+      ]
+    };
+    if (config && Object.keys(config).length > 0) {
+      payload.generationConfig = config;
+    }
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+    return { ok: true, response };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    return { ok: false, error: err };
+  }
+}
+
+/**
  * Calls Gemini API with:
- * - 12-second AbortController timeout per call
- * - Fallbacks on 504 (timeout), 429, 500, 503, 404, or 5xx
- * - Model order: GEMINI_MODEL (if set) -> gemini-2.5-flash-lite -> gemini-flash-latest -> gemini-2.5-flash
- * - Maximum 26 seconds total budget
+ * - Model order: GEMINI_MODEL (if set) -> gemini-3.5-flash-lite -> gemini-3.8-flash
+ * - Auto-discovery if every model in the list returns 404
+ * - 15s per-attempt timeout, 28s total budget
+ * - Unsupported field 400 retry without extras
  * - Cleansed error messages with no API key leakage
  */
 async function callGeminiWithFallback(apiKey, systemInstructionText, userText, generationConfig) {
   const candidateModels = [
     (process.env.GEMINI_MODEL || '').trim(),
-    'gemini-2.5-flash-lite',
-    'gemini-flash-latest',
-    'gemini-2.5-flash'
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash'
   ].filter(Boolean);
 
-  // Deduplicate while preserving priority order
-  const modelsToTry = [...new Set(candidateModels)];
+  let modelsToTry = [...new Set(candidateModels)];
 
   const startTime = Date.now();
   let lastStatus = 502;
   let lastErrorText = 'Failed to communicate with Gemini AI.';
+  const attemptedStatuses = [];
 
-  for (let i = 0; i < modelsToTry.length; i++) {
-    const model = modelsToTry[i];
+  // Helper to attempt a specific model
+  async function attemptModel(model) {
+    const elapsedMs = Date.now() - startTime;
+    if (elapsedMs >= 28000) return null;
+
+    const remainingBudget = Math.max(1000, 28000 - elapsedMs);
+    const attemptTimeout = Math.min(15000, remainingBudget);
+
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const reqResult = await executeGeminiRequest(
+      apiUrl,
+      systemInstructionText,
+      userText,
+      generationConfig,
+      attemptTimeout
+    );
 
-    try {
-      const geminiResponse = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: systemInstructionText }]
-          },
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: userText }]
-            }
-          ],
-          generationConfig
-        }),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (geminiResponse.ok) {
-        const data = await geminiResponse.json();
-        return { ok: true, data, model };
-      }
-
-      lastStatus = geminiResponse.status;
-      const rawErrorText = await geminiResponse.text();
-      lastErrorText = rawErrorText;
-
-      console.error(`Gemini API returned error for model "${model}":`, lastStatus, rawErrorText);
-
-      // Retry on 504 (timeout), 429, 500, 503, 404, 5xx, or model-not-found patterns
-      const isRetryable = lastStatus === 404 ||
-                          lastStatus === 429 ||
-                          lastStatus === 500 ||
-                          lastStatus === 503 ||
-                          lastStatus === 504 ||
-                          (lastStatus >= 500 && lastStatus <= 599) ||
-                          /not found|NOT_FOUND|not supported for generateContent/i.test(rawErrorText);
-
-      const elapsedMs = Date.now() - startTime;
-      if (isRetryable && i < modelsToTry.length - 1 && elapsedMs < 26000) {
-        console.warn(`Gemini model "${model}" returned ${lastStatus}. Retrying with fallback "${modelsToTry[i + 1]}" (elapsed ${elapsedMs}ms)...`);
-        continue;
-      }
-
-      break;
-    } catch (fetchErr) {
-      clearTimeout(timeoutId);
-      const isAbort = fetchErr.name === 'AbortError' || controller.signal.aborted;
+    if (!reqResult.ok) {
+      const isAbort = reqResult.error.name === 'AbortError';
       lastStatus = isAbort ? 504 : 502;
-      lastErrorText = isAbort ? 'Gemini call timed out after 12 seconds.' : (fetchErr.message || 'Network error communicating with Gemini.');
-
+      lastErrorText = isAbort ? 'Gemini call timed out after 15 seconds.' : (reqResult.error.message || 'Network error');
       console.error(`Gemini call error for model "${model}":`, lastStatus, lastErrorText);
+      attemptedStatuses.push(lastStatus);
+      return null;
+    }
 
-      const elapsedMs = Date.now() - startTime;
-      if (i < modelsToTry.length - 1 && elapsedMs < 26000) {
-        console.warn(`Retrying with fallback "${modelsToTry[i + 1]}" after error (elapsed ${elapsedMs}ms)...`);
-        continue;
+    const geminiResponse = reqResult.response;
+    if (geminiResponse.ok) {
+      const data = await geminiResponse.json();
+      return { ok: true, data, model };
+    }
+
+    lastStatus = geminiResponse.status;
+    const rawErrorText = await geminiResponse.text();
+    lastErrorText = rawErrorText;
+    console.error(`Gemini API returned error for model "${model}":`, lastStatus, sanitizeMessage(rawErrorText, apiKey));
+    attemptedStatuses.push(lastStatus);
+
+    // If 400 about unsupported field (e.g. responseMimeType), retry once without extras
+    if (
+      lastStatus === 400 &&
+      generationConfig &&
+      generationConfig.responseMimeType &&
+      /unsupported|unknown field|responsemimetype|not supported/i.test(rawErrorText)
+    ) {
+      const retryElapsed = Date.now() - startTime;
+      if (retryElapsed < 28000) {
+        console.warn(`Model "${model}" returned 400 for config. Retrying without responseMimeType...`);
+        const retryConfig = { ...generationConfig };
+        delete retryConfig.responseMimeType;
+
+        const retryReq = await executeGeminiRequest(
+          apiUrl,
+          systemInstructionText,
+          userText,
+          retryConfig,
+          Math.min(15000, 28000 - retryElapsed)
+        );
+
+        if (retryReq.ok && retryReq.response.ok) {
+          const data = await retryReq.response.json();
+          return { ok: true, data, model };
+        }
       }
+    }
 
+    return null;
+  }
+
+  // 1. Try configured models
+  for (const model of modelsToTry) {
+    const success = await attemptModel(model);
+    if (success) return success;
+
+    // Check if retryable: 404, 429, 500, 503, 504, 5xx
+    const isRetryable =
+      lastStatus === 404 ||
+      lastStatus === 429 ||
+      lastStatus === 500 ||
+      lastStatus === 503 ||
+      lastStatus === 504 ||
+      (lastStatus >= 500 && lastStatus <= 599) ||
+      /not found|NOT_FOUND|not supported for generateContent/i.test(lastErrorText);
+
+    if (!isRetryable) {
+      // Non-retryable error (e.g. invalid API key 400) -> stop
       break;
     }
   }
 
-  // Parse Google's error message cleanly if possible
-  let parsedMessage = lastErrorText;
+  // 2. Step 3 Auto-Discovery: If every model in the list failed with 404, discover and try up to 3 flash models
+  const allWere404 =
+    attemptedStatuses.length > 0 &&
+    attemptedStatuses.every(s => s === 404);
+
+  if (allWere404 && Date.now() - startTime < 28000) {
+    console.log('All configured models returned 404. Attempting auto-discovery of Flash models...');
+    const discovered = await discoverModels(apiKey);
+    for (const discModel of discovered) {
+      if (modelsToTry.includes(discModel)) continue;
+      if (Date.now() - startTime >= 28000) break;
+
+      console.log(`Trying auto-discovered model "${discModel}"...`);
+      const success = await attemptModel(discModel);
+      if (success) return success;
+    }
+  }
+
+  // Parse a concise error reason
+  let shortReason = 'request failed';
   try {
     const jsonErr = JSON.parse(lastErrorText);
     if (jsonErr?.error?.message) {
-      parsedMessage = jsonErr.error.message;
+      shortReason = jsonErr.error.message;
     }
-  } catch (_) {}
-
-  // Strip API key from error message to prevent any leakage
-  if (apiKey) {
-    parsedMessage = parsedMessage.split(apiKey).join('[REDACTED]');
+  } catch (_) {
+    if (lastErrorText) {
+      shortReason = lastErrorText;
+    }
   }
-  parsedMessage = parsedMessage.replace(/key=[a-zA-Z0-9_\-]+/gi, 'key=[REDACTED]');
-  parsedMessage = parsedMessage.replace(/AIza[a-zA-Z0-9_\-]+/gi, '[REDACTED]');
 
-  if (parsedMessage.length > 250) {
-    parsedMessage = parsedMessage.slice(0, 250) + '...';
+  shortReason = sanitizeMessage(shortReason, apiKey);
+  if (shortReason.length > 80) {
+    shortReason = shortReason.slice(0, 80) + '...';
   }
+
+  const friendlyError = `AI is busy, please retry in a few seconds (last error: ${lastStatus} ${shortReason})`;
 
   return {
     ok: false,
     status: lastStatus,
-    error: parsedMessage
+    error: friendlyError,
+    details: sanitizeMessage(lastErrorText, apiKey)
   };
 }
 
@@ -220,6 +377,11 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: 'Please provide a non-empty list of notice items to summarize.' });
     }
 
+    const rawItemsString = JSON.stringify(items);
+    if (rawItemsString.length > 15000) {
+      return res.status(400).json({ error: 'Items payload is too large to summarize.' });
+    }
+
     // Limit payload size: maximum 50 items (title, date, time, venue, category only - no descriptions)
     const limitedItems = items.slice(0, 50).map(item => ({
       title: (item.title || '').slice(0, 150),
@@ -230,9 +392,6 @@ module.exports = async function handler(req, res) {
     }));
 
     const itemsJsonString = JSON.stringify(limitedItems, null, 2);
-    if (itemsJsonString.length > 15000) {
-      return res.status(400).json({ error: 'Items payload is too large to summarize.' });
-    }
 
     const summarySystemPrompt = `You are Campus Pulse AI, a friendly, concise student assistant.
 Today's reference date is: ${referenceDate}.
@@ -259,19 +418,16 @@ Format requirements:
         `NOTICES TO SUMMARIZE FOR THIS WEEK:\n${itemsJsonString}`,
         {
           maxOutputTokens: 600,
-          temperature: 0.1,
-          thinkingConfig: {
-            thinkingBudget: 0
-          }
+          temperature: 0.1
         }
       );
 
       if (!result.ok) {
         console.error('Gemini API returned error for summary:', result.status, result.error);
         return res.status(502).json({
-          error: 'AI is busy, please retry in a few seconds',
+          error: result.error,
           status: result.status,
-          details: result.error
+          details: result.details
         });
       }
 
@@ -350,19 +506,16 @@ PARSING REQUIREMENTS:
       {
         responseMimeType: 'application/json',
         maxOutputTokens: 1024,
-        temperature: 0.1,
-        thinkingConfig: {
-          thinkingBudget: 0
-        }
+        temperature: 0.1
       }
     );
 
     if (!result.ok) {
       console.error('Gemini API returned error:', result.status, result.error);
       return res.status(502).json({
-        error: 'AI is busy, please retry in a few seconds',
+        error: result.error,
         status: result.status,
-        details: result.error
+        details: result.details
       });
     }
 
